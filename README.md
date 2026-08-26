@@ -1,13 +1,16 @@
 # MetaScraper
 
-**Catalog the metadata of your camera video and audio recordings.**
+**Catalog *and* organize the metadata of your camera video and audio recordings.**
 
-Point MetaScraper at a folder of recordings and it will:
+MetaScraper has three commands:
 
-1. 📄 Write a polished, professional **Word document (`.docx`) for every file** —
-   a "Project Information" sheet capturing all of that file's metadata.
-2. 📚 Keep a running **master catalog** of everything, as both a formatted
-   **Word document** and a sortable **Excel spreadsheet (`.xlsx`)**.
+- **`catalog`** — 📄 write a polished **Word document (`.docx`) for every file**
+  and 📚 keep a running **master catalog** as both a formatted **Word document**
+  and a sortable **Excel spreadsheet (`.xlsx`)**.
+- **`organize`** — 🗂️ **copy** your recordings into a tidy
+  `Video|Audio / Camera / Date` tree. Your originals are never touched.
+- **`finalize`** — 🧹 once you've checked the copies, **delete the originals**
+  that verify against the copy — the safe "move later" step.
 
 It reads rich technical details — codec, resolution, frame rate, bitrate,
 duration, audio sample rate/channels/bit depth, camera make & model, lens,
@@ -27,11 +30,14 @@ same folder again **updates** existing entries instead of creating duplicates.
 # 1. Install MetaScraper (from the project folder)
 pip install .
 
-# 2. Catalog a folder of recordings
+# 2. Catalog a folder of recordings  (the default command)
 metascraper "/path/to/your/recordings"
+
+# 3. Or organize them into a tidy library (originals stay put)
+metascraper organize "/path/to/your/recordings" -o "/path/to/Library"
 ```
 
-That produces a `MetaScraper_Catalog/` folder next to your recordings:
+`catalog` produces a `MetaScraper_Catalog/` folder next to your recordings:
 
 ```
 MetaScraper_Catalog/
@@ -84,8 +90,13 @@ If a tool isn't on your `PATH`, point MetaScraper at it directly with
 
 ## Usage
 
+MetaScraper is organized into subcommands. Running it with just folders (no
+subcommand) is shorthand for `catalog`.
+
+### `catalog` — document & index
+
 ```
-metascraper [FOLDERS...] [options]
+metascraper catalog [FOLDERS...] [options]
 ```
 
 | Option | Description |
@@ -98,27 +109,75 @@ metascraper [FOLDERS...] [options]
 | `--no-per-file` | Skip the per-file Word documents; only update the master catalog. |
 | `--no-master` | Skip the master catalog; only write per-file documents. |
 | `--master-name NAME` | Base name for the master files (default: `Master_Catalog`). |
-| `--ffprobe PATH` | Path to the `ffprobe` binary. |
-| `--exiftool PATH` | Path to the `exiftool` binary. |
+| `--ffprobe PATH` / `--exiftool PATH` | Paths to the tool binaries. |
 | `-q, --quiet` | Only print warnings and the final summary. |
-
-### Examples
 
 ```bash
 # Catalog a single project folder (recursive by default)
 metascraper "~/Shoots/2024-05 Wildlife Doc"
 
 # Catalog several folders into one shared catalog
-metascraper ./Footage ./B-Roll ./Audio -o "~/Catalogs/WildlifeDoc"
-
-# Only the top level, and include RAW cinema formats
-metascraper ./Footage --no-recursive --include braw,ari,r3d
+metascraper catalog ./Footage ./B-Roll ./Audio -o "~/Catalogs/WildlifeDoc"
 
 # Point at tools that aren't on PATH (e.g. on Windows)
 metascraper ./Footage --ffprobe "C:\ffmpeg\bin\ffprobe.exe"
 ```
 
-You can run MetaScraper as a module too: `python -m metascraper ./Footage`.
+### `organize` — sort into a tidy library
+
+```
+metascraper organize [FOLDERS...] -o DEST [options]
+```
+
+Copies each recording into:
+
+```
+DEST/
+├── Video/
+│   ├── Sony ILCE-7M4/
+│   │   ├── 2024-05-11/  C0042.MP4
+│   │   └── 2024-05-12/  C0051.MP4
+│   └── iPhone 15 Pro/
+│       └── 2024-05-11/  IMG_4021.MOV
+└── Audio/
+    └── Zoom H6/
+        └── 2024-05-11/  ZOOM0007.WAV
+```
+
+The camera folder comes from the recording's make/model (files without that
+metadata go under **Unknown Camera**); the date is the recording date, falling
+back to the file's modified date (**Unknown Date** if neither exists). Files
+with no camera/audio distinction land under **Other**.
+
+| Option | Description |
+| --- | --- |
+| `-o, --dest DIR` | Destination root. Defaults to a `MetaScraper_Organized` folder beside the input. |
+| `--dry-run` | Show the planned moves without copying anything. |
+| `--checksum` | Verify each copy with a SHA-256 checksum (slower, strongest guarantee). |
+| `--no-recursive`, `--include`, `--all-files`, `--ffprobe`, `--exiftool`, `-q` | As for `catalog`. |
+
+**Originals are never modified or deleted by `organize`.** Every copy is
+recorded in a `.metascraper_organize_manifest.json` at the destination.
+
+### `finalize` — delete the originals (the "move")
+
+```
+metascraper finalize DEST [--checksum] [--yes]
+```
+
+Once you've confirmed the copies are good, `finalize` removes each original —
+but only after re-verifying that its copy still matches. **Without `--yes` it
+just previews**; nothing is deleted until you re-run with `--yes`.
+
+```bash
+# 1. Copy into the library (safe, originals kept)
+metascraper organize ./SDCard -o "~/Media Library" --checksum
+
+# 2. Look over ~/Media Library, then complete the move
+metascraper finalize "~/Media Library" --yes --checksum
+```
+
+You can run any command as a module too: `python -m metascraper organize …`.
 
 ---
 
