@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from . import __version__, utils
 from .catalog import MasterCatalog
@@ -84,15 +86,35 @@ def _slugify(name: str) -> str:
     return slug or "media"
 
 
-def _unique_doc_path(docs_dir: str, info_name: str, used: set) -> str:
-    base = _slugify(info_name)
-    candidate = f"{base}.docx"
-    counter = 2
-    while candidate.lower() in used:
-        candidate = f"{base}_{counter}.docx"
-        counter += 1
-    used.add(candidate.lower())
-    return os.path.join(docs_dir, candidate)
+def _plan_doc_names(paths: Sequence[str], docs_dir: str) -> Dict[str, str]:
+    """Map each source file's absolute path to a stable per-file .docx path.
+
+    A file's document name depends only on that file (its base name, plus a
+    short hash of its absolute path when two files share a base name), so the
+    mapping is deterministic across runs and one file's report can never be
+    written over another's.
+    """
+    slugs = [_slugify(os.path.basename(p)) for p in paths]
+    counts = Counter(slugs)
+    mapping: Dict[str, str] = {}
+    for path, slug in zip(paths, slugs):
+        abspath = os.path.abspath(path)
+        if counts[slug] > 1:
+            digest = hashlib.sha1(abspath.encode("utf-8")).hexdigest()[:8]
+            filename = f"{slug}__{digest}.docx"
+        else:
+            filename = f"{slug}.docx"
+        mapping[abspath] = os.path.join(docs_dir, filename)
+    return mapping
+
+
+def _display_path(path: str) -> str:
+    """A relative path for display, tolerant of Windows cross-drive paths."""
+    try:
+        return os.path.relpath(path)
+    except ValueError:
+        # os.path.relpath raises when path and cwd are on different drives.
+        return path
 
 
 def _resolve_output_dir(folders: Sequence[str], explicit: Optional[str]) -> str:
@@ -118,6 +140,18 @@ def run(argv: Optional[List[str]] = None) -> int:
     docs_dir = os.path.join(output_dir, DOCS_SUBDIR)
 
     tools = ToolLocation(ffprobe=args.ffprobe, exiftool=args.exiftool)
+    if args.ffprobe and not tools.has_ffprobe:
+        print(
+            f"⚠  The --ffprobe path '{args.ffprobe}' is not a usable executable; "
+            "falling back to searching your PATH.",
+            file=sys.stderr,
+        )
+    if args.exiftool and not tools.has_exiftool:
+        print(
+            f"⚠  The --exiftool path '{args.exiftool}' is not a usable executable; "
+            "falling back to searching your PATH.",
+            file=sys.stderr,
+        )
     if not tools.has_ffprobe:
         print(
             "⚠  ffprobe was not found. MetaScraper will still catalog files, but "
@@ -134,7 +168,7 @@ def run(argv: Optional[List[str]] = None) -> int:
             args.quiet,
         )
 
-    extra = [e for e in args.include.split(",") if e.strip()]
+    extra = [e.strip() for e in args.include.split(",") if e.strip()]
     files = find_media_files(
         folders,
         recursive=args.recursive,
@@ -157,13 +191,13 @@ def run(argv: Optional[List[str]] = None) -> int:
         store_path = os.path.join(output_dir, f"{args.master_name}.json")
         catalog = MasterCatalog(store_path).load()
 
-    used_doc_names: set = set()
+    doc_names = _plan_doc_names(files, docs_dir) if args.per_file else {}
     new_count = 0
     updated_count = 0
     failures: List[str] = []
 
     for index, path in enumerate(files, start=1):
-        rel = os.path.relpath(path)
+        rel = _display_path(path)
         _emit(f"  [{index}/{len(files)}] {rel}", args.quiet)
         try:
             info = probe_file(path, tools=tools)
@@ -173,7 +207,7 @@ def run(argv: Optional[List[str]] = None) -> int:
 
         if args.per_file:
             try:
-                doc_path = _unique_doc_path(docs_dir, info.name, used_doc_names)
+                doc_path = doc_names[os.path.abspath(path)]
                 write_report(info, doc_path, generated_at=generated_at)
             except Exception as exc:  # noqa: BLE001
                 failures.append(f"{rel} (document): {exc}")

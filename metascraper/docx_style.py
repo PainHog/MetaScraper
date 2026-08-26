@@ -11,7 +11,7 @@ from typing import Iterable, Optional
 from docx import Document
 from docx.enum.section import WD_SECTION
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Pt, RGBColor, Twips
@@ -262,10 +262,16 @@ def add_footer(document: Document, left_text: str) -> None:
     paragraph.text = ""
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
+    # A right-aligned tab stop at the printable width pushes everything after
+    # the tab flush against the right margin, whatever the page orientation.
+    usable_width = section.page_width - section.left_margin - section.right_margin
+    paragraph.paragraph_format.tab_stops.add_tab_stop(
+        usable_width, WD_TAB_ALIGNMENT.RIGHT
+    )
+
     left = paragraph.add_run(left_text + "\t")
     _set_run(left, size=8, color=MUTED)
 
-    # Add tab stops so the page number sits flush right.
     tab = paragraph.add_run("Page ")
     _set_run(tab, size=8, color=MUTED)
     _add_page_field(paragraph, "PAGE")

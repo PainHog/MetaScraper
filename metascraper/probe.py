@@ -26,12 +26,14 @@ class ToolLocation:
         ffprobe: Optional[str] = None,
         exiftool: Optional[str] = None,
     ) -> None:
-        self.ffprobe = ffprobe or _resolve_binary(
-            explicit=os.environ.get("METASCRAPER_FFPROBE"),
+        # An explicit path (from the CLI flag or env var) is validated too, so a
+        # typo falls back to a PATH search instead of failing on every file.
+        self.ffprobe = _resolve_binary(
+            explicit=ffprobe or os.environ.get("METASCRAPER_FFPROBE"),
             names=("ffprobe",),
         )
-        self.exiftool = exiftool or _resolve_binary(
-            explicit=os.environ.get("METASCRAPER_EXIFTOOL"),
+        self.exiftool = _resolve_binary(
+            explicit=exiftool or os.environ.get("METASCRAPER_EXIFTOOL"),
             names=("exiftool",),
         )
 
@@ -110,6 +112,20 @@ def run_exiftool(path: str, exiftool: str, timeout: int = 120) -> Dict[str, Any]
 # Pure parsing (unit-testable without the binaries)
 # ---------------------------------------------------------------------------
 
+def _pick_frame_rate(raw: Dict[str, Any]) -> Optional[float]:
+    """Prefer avg_frame_rate, but fall back to r_frame_rate.
+
+    ffprobe reports ``avg_frame_rate`` as the truthy string ``"0/0"`` for many
+    variable-frame-rate / MKV / TS streams, so a plain ``a or b`` would keep the
+    useless value; parse each in turn and take the first that resolves.
+    """
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        rate = utils.parse_frame_rate(raw.get(key))
+        if rate is not None:
+            return rate
+    return None
+
+
 def _stream_from_ffprobe(raw: Dict[str, Any]) -> StreamSummary:
     tags = raw.get("tags", {}) or {}
     rotation = None
@@ -139,9 +155,7 @@ def _stream_from_ffprobe(raw: Dict[str, Any]) -> StreamSummary:
         height=utils.to_int(raw.get("height")),
         display_aspect_ratio=raw.get("display_aspect_ratio"),
         pixel_format=raw.get("pix_fmt"),
-        frame_rate=utils.parse_frame_rate(
-            raw.get("avg_frame_rate") or raw.get("r_frame_rate")
-        ),
+        frame_rate=_pick_frame_rate(raw),
         color_space=raw.get("color_space"),
         color_transfer=raw.get("color_transfer"),
         color_primaries=raw.get("color_primaries"),

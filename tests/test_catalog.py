@@ -102,3 +102,56 @@ def test_corrupt_store_is_backed_up_not_fatal(tmp_path):
     catalog = MasterCatalog(str(store)).load()
     assert catalog.records == {}
     assert (tmp_path / "master.json.corrupt").exists()
+
+
+def test_valid_but_non_dict_store_is_recovered(tmp_path):
+    # Valid JSON that isn't the expected object shape must not crash load().
+    store = tmp_path / "master.json"
+    store.write_text("[]")
+    catalog = MasterCatalog(str(store)).load()
+    assert catalog.records == {}
+    assert (tmp_path / "master.json.corrupt").exists()
+
+
+def test_records_not_a_dict_is_recovered(tmp_path):
+    store = tmp_path / "master.json"
+    store.write_text('{"records": [1, 2, 3]}')
+    catalog = MasterCatalog(str(store)).load()
+    assert catalog.records == {}
+    assert (tmp_path / "master.json.corrupt").exists()
+
+
+def test_xlsx_neutralizes_formula_injection(tmp_path):
+    # A file name beginning with '=' must be stored as text, never a formula.
+    info = media_info_from_payloads(
+        "/media/=cmd|'/c calc'.mp4", ffprobe_data=WAV_FFPROBE
+    )
+    catalog = MasterCatalog(str(tmp_path / "m.json")).load()
+    catalog.upsert(info, NOW)
+    xlsx = str(tmp_path / "Master.xlsx")
+    catalog.render_xlsx(xlsx, NOW)
+
+    workbook = load_workbook(xlsx)
+    sheet = workbook["Catalog"]
+    danger = [c for row in sheet.iter_rows(min_row=2) for c in row
+              if isinstance(c.value, str) and c.value.startswith("=")]
+    assert danger, "expected the crafted value to be present"
+    for cell in danger:
+        assert cell.data_type == "s"  # string, not 'f' (formula)
+
+
+def test_xlsx_auto_filter_spans_all_rows(tmp_path):
+    catalog = MasterCatalog(str(tmp_path / "m.json")).load()
+    catalog.upsert(_video_info(), NOW)
+    catalog.upsert(_audio_info(), NOW)
+    xlsx = str(tmp_path / "Master.xlsx")
+    catalog.render_xlsx(xlsx, NOW)
+    sheet = load_workbook(xlsx)["Catalog"]
+    # 18 columns -> R; header + 2 data rows -> row 3.
+    assert sheet.auto_filter.ref == "A1:R3"
+
+
+def test_master_docx_columns_fit_landscape_page():
+    total = sum(width for _, _, width in MasterCatalog.DOCX_COLUMNS)
+    # Landscape US Letter (11") minus 0.8" margins each side = 9.4" printable.
+    assert total <= 9.4

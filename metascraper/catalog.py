@@ -23,6 +23,20 @@ from .models import MASTER_COLUMNS, MediaInfo
 
 SCHEMA_VERSION = 2
 
+# Leading characters a spreadsheet may interpret as the start of a formula.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralize_formula(cell, value) -> None:
+    """Force a risky string to be stored as text, preventing formula injection.
+
+    A file name or metadata tag like ``=cmd|'/c calc'!A1`` would otherwise be
+    written as a live formula. Typing the cell as a string makes the spreadsheet
+    show it literally without evaluating it (and without an added apostrophe).
+    """
+    if isinstance(value, str) and value[:1] in _FORMULA_TRIGGERS:
+        cell.data_type = "s"
+
 
 class MasterCatalog:
     """Load, update, and render the running master catalog."""
@@ -39,9 +53,17 @@ class MasterCatalog:
             try:
                 with open(self.store_path, "r", encoding="utf-8") as handle:
                     data = json.load(handle)
-                self.records = data.get("records", {}) or {}
+                # Valid JSON that isn't the expected shape (e.g. a list, or a
+                # hand-edited file whose "records" is not an object) is treated
+                # as corrupt rather than crashing later on .get()/.values().
+                if not isinstance(data, dict):
+                    raise ValueError("catalog store is not a JSON object")
+                records = data.get("records", {})
+                if records and not isinstance(records, dict):
+                    raise ValueError("catalog 'records' is not a JSON object")
+                self.records = records or {}
                 self.updated_at = data.get("updated_at")
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, ValueError):
                 # Corrupt or unreadable store: start fresh but keep a backup.
                 self._backup_corrupt_store()
                 self.records = {}
@@ -134,10 +156,12 @@ class MasterCatalog:
             cell.alignment = Alignment(vertical="center", horizontal="left")
             cell.border = border
 
-        for r_idx, record in enumerate(self.sorted_records(), start=2):
+        records = self.sorted_records()
+        for r_idx, record in enumerate(records, start=2):
             for c_idx, key in enumerate(keys, start=1):
                 value = record.get(key)
                 cell = sheet.cell(row=r_idx, column=c_idx, value=value)
+                _neutralize_formula(cell, value)
                 cell.font = cell_font
                 cell.alignment = wrap
                 cell.border = border
@@ -156,7 +180,8 @@ class MasterCatalog:
 
         sheet.freeze_panes = "A2"
         last_col = get_column_letter(len(headers))
-        sheet.auto_filter.ref = f"A1:{last_col}1"
+        last_row = len(records) + 1  # header + data rows
+        sheet.auto_filter.ref = f"A1:{last_col}{last_row}"
 
         # A compact summary sheet.
         self._add_xlsx_summary(workbook, generated_at)
@@ -193,19 +218,21 @@ class MasterCatalog:
 
     # -- rendering: DOCX --------------------------------------------------
 
-    # A trimmed column set that fits comfortably on a landscape page.
+    # A trimmed column set that fits on a landscape US-Letter page: 11" wide
+    # with 0.8" margins leaves ~9.4" of printable width, so the widths below
+    # (summing to ~9.3") stay inside the right margin.
     DOCX_COLUMNS = [
-        ("file_name", "File Name", 2.1),
-        ("media_kind", "Type", 0.7),
-        ("duration", "Duration", 0.8),
-        ("file_size", "Size", 0.85),
-        ("resolution", "Resolution", 1.1),
-        ("frame_rate", "FPS", 0.7),
-        ("video_codec", "Video", 0.8),
-        ("audio_codec", "Audio", 0.75),
-        ("camera_model", "Camera", 1.2),
-        ("recorded_at", "Recorded", 1.4),
-        ("folder", "Folder", 1.2),
+        ("file_name", "File Name", 1.7),
+        ("media_kind", "Type", 0.55),
+        ("duration", "Duration", 0.65),
+        ("file_size", "Size", 0.7),
+        ("resolution", "Resolution", 0.9),
+        ("frame_rate", "FPS", 0.5),
+        ("video_codec", "Video", 0.7),
+        ("audio_codec", "Audio", 0.6),
+        ("camera_model", "Camera", 1.0),
+        ("recorded_at", "Recorded", 1.15),
+        ("folder", "Folder", 0.85),
     ]
 
     def render_docx(self, output_path: str, generated_at: datetime) -> str:

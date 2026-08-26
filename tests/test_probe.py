@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from metascraper.probe import media_info_from_payloads
+from metascraper import probe
+from metascraper.probe import ToolLocation, media_info_from_payloads
 from tests.sample_payloads import (
     IPHONE_EXIFTOOL,
     IPHONE_MOV_FFPROBE,
@@ -104,6 +105,42 @@ def test_master_row_shape():
     assert row["resolution"] == "3840 × 2160"
     assert row["frame_rate"] == "29.97 fps"
     assert row["camera_model"] == "iPhone 15 Pro"
+
+
+def test_frame_rate_falls_back_when_avg_is_zero():
+    # ffprobe reports avg_frame_rate '0/0' for many VFR/MKV streams; the real
+    # rate lives in r_frame_rate and must not be lost.
+    payload = {
+        "streams": [{
+            "index": 0, "codec_type": "video", "codec_name": "h264",
+            "width": 1920, "height": 1080,
+            "avg_frame_rate": "0/0", "r_frame_rate": "25/1",
+            "tags": {},
+        }],
+        "format": {"format_name": "matroska", "duration": "5.0", "tags": {}},
+    }
+    info = media_info_from_payloads("clip.mkv", ffprobe_data=payload)
+    assert info.primary_video.frame_rate == 25.0
+    assert info.master_row()["frame_rate"] == "25 fps"
+
+
+def test_explicit_tool_path_is_validated(monkeypatch):
+    # A bad --ffprobe path must not be trusted; with nothing on PATH it resolves
+    # to None so the caller can warn instead of failing on every file.
+    monkeypatch.setattr(probe.shutil, "which", lambda *_a, **_k: None)
+    tools = ToolLocation(ffprobe="/definitely/not/here/ffprobe")
+    assert tools.ffprobe is None
+    assert tools.has_ffprobe is False
+
+
+def test_explicit_tool_path_accepts_real_executable(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe.shutil, "which", lambda *_a, **_k: None)
+    fake = tmp_path / "ffprobe"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    tools = ToolLocation(ffprobe=str(fake))
+    assert tools.ffprobe == str(fake)
+    assert tools.has_ffprobe is True
 
 
 def test_missing_ffprobe_still_produces_basic_record(tmp_path):
