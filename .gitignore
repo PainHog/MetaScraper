@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / build artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MetaScraper output (don't commit generated catalogs)
+MetaScraper_Catalog/
+*.corrupt
+
+# OS
+.DS_Store
+Thumbs.db

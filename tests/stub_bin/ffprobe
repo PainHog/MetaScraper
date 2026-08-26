@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""A tiny stand-in for ffprobe used by the integration test.
+
+It accepts the same flags MetaScraper passes and prints a valid ffprobe-shaped
+JSON payload for the requested file, so the subprocess plumbing in
+``metascraper.probe.run_ffprobe`` is exercised for real.
+"""
+import json
+import os
+import sys
+
+path = sys.argv[-1]
+size = os.path.getsize(path) if os.path.exists(path) else 0
+ext = os.path.splitext(path)[1].lower()
+
+if ext in (".wav", ".flac", ".aiff", ".mp3", ".m4a"):
+    payload = {
+        "streams": [
+            {
+                "index": 0,
+                "codec_name": "pcm_s16le",
+                "codec_long_name": "PCM signed 16-bit little-endian",
+                "codec_type": "audio",
+                "sample_rate": "48000",
+                "channels": 1,
+                "channel_layout": "mono",
+                "bits_per_sample": 16,
+                "bit_rate": "768000",
+                "duration": "1.000000",
+                "tags": {},
+            }
+        ],
+        "format": {
+            "filename": os.path.basename(path),
+            "nb_streams": 1,
+            "format_name": "wav",
+            "format_long_name": "WAV / WAVE (Waveform Audio)",
+            "duration": "1.000000",
+            "size": str(size),
+            "bit_rate": "768000",
+            "tags": {"encoder": "stub"},
+        },
+        "chapters": [],
+    }
+else:
+    payload = {
+        "streams": [
+            {
+                "index": 0,
+                "codec_name": "h264",
+                "codec_long_name": "H.264",
+                "codec_type": "video",
+                "width": 1920,
+                "height": 1080,
+                "display_aspect_ratio": "16:9",
+                "pix_fmt": "yuv420p",
+                "avg_frame_rate": "25/1",
+                "r_frame_rate": "25/1",
+                "bit_rate": "8000000",
+                "duration": "2.000000",
+                "tags": {"handler_name": "VideoHandler"},
+            }
+        ],
+        "format": {
+            "filename": os.path.basename(path),
+            "nb_streams": 1,
+            "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+            "format_long_name": "QuickTime / MOV",
+            "duration": "2.000000",
+            "size": str(size),
+            "bit_rate": "8000000",
+            "tags": {
+                "make": "TestCam",
+                "model": "CX-900",
+                "creation_time": "2023-01-02T10:00:00.000000Z",
+            },
+        },
+        "chapters": [],
+    }
+
+json.dump(payload, sys.stdout)
