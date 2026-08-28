@@ -22,6 +22,41 @@ catalog is a true archive.
 Re-running is safe: the master catalog is keyed by file path, so scanning the
 same folder again **updates** existing entries instead of creating duplicates.
 
+You can use MetaScraper two ways: a **desktop app** (a real window — see
+[The Windows app](#the-windows-app)) or the **command line** (below).
+
+---
+
+## The Windows app
+
+MetaScraper ships as a windowed desktop app — `MetaScraper.exe` — with tabs for
+**Catalog**, **Organize**, and **Finalize**: pick or drag-and-drop folders,
+tick a few options, click **Run**, and watch the progress. No Python required to
+run it.
+
+**Getting the .exe:** every push builds it automatically on a Windows machine
+via GitHub Actions. Open the repo's **Actions → Build Windows App** → the latest
+run → download the **MetaScraper-windows** artifact (tagging a release as
+`vX.Y.Z` also attaches the `.exe` to the release). To build it yourself on a
+Windows PC:
+
+```powershell
+pip install .[build]
+pyinstaller packaging/MetaScraper.spec
+# → dist/MetaScraper.exe
+```
+
+**FFmpeg is not bundled.** Install it once (see [Requirements](#requirements));
+the app shows a banner if it can't find `ffprobe`, and you can point it at
+`ffprobe.exe` directly.
+
+To run the GUI from a Python install instead of the packaged exe:
+
+```bash
+pip install .[gui]
+metascraper-gui
+```
+
 ---
 
 ## Quick start
@@ -229,7 +264,7 @@ to start a fresh catalog.
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[gui,dev]"   # gui extra pulls in PySide6 for the GUI tests
 pytest
 ```
 
