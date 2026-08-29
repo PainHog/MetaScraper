@@ -27,6 +27,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q
+      - name: Functional smoke (catalog → organize → finalize)
+        run: python packaging/functional_smoke.py
 
   build-windows:
     needs: test
@@ -38,6 +40,8 @@ jobs:
           python-version: "3.11"
       - name: Install build dependencies
         run: pip install .[build]
+      - name: Functional smoke on Windows (catalog → organize → finalize)
+        run: python packaging/functional_smoke.py
       - name: Build MetaScraper.exe
         run: pyinstaller packaging/MetaScraper.spec
       - name: Upload the .exe as a downloadable artifact
