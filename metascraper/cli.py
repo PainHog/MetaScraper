@@ -145,13 +145,49 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # ---------------------------------------------------------------------------
+# Console output that never crashes
+# ---------------------------------------------------------------------------
+
+def _prepare_output() -> None:
+    """Make printing safe whatever the output encoding.
+
+    When output is redirected on Windows (to a file, a pipe, a script) Python
+    writes cp1252, which can't encode characters like ─ ⚠ →; printing one
+    used to crash the command after its work was done. Such characters now
+    come out as '?' (and the ones below pick a plain fallback instead).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+def _glyph(fancy: str, plain: str, stream=None) -> str:
+    """``fancy`` if the output can show it, else ``plain``."""
+    stream = stream if stream is not None else sys.stdout
+    encoding = getattr(stream, "encoding", None) or "ascii"
+    try:
+        fancy.encode(encoding)
+        return fancy
+    except (UnicodeEncodeError, LookupError):
+        return plain
+
+
+def _rule() -> str:
+    return _glyph("─", "-") * 60
+
+
+# ---------------------------------------------------------------------------
 # Progress reporting → console
 # ---------------------------------------------------------------------------
 
 def _make_reporter(quiet: bool):
     def report(event: Event) -> None:
         if event.kind == "warn":
-            print("⚠  " + event.message, file=sys.stderr)
+            print(_glyph("⚠", "!", sys.stderr) + "  " + event.message, file=sys.stderr)
             return
         if quiet:
             return
@@ -172,7 +208,7 @@ def _split_include(value: str) -> List[str]:
 def _resolve_tools(args):
     tools = service.resolve_tools(args.ffprobe, args.exiftool)
     for warning in service.tool_warnings(tools, args.ffprobe, args.exiftool):
-        print("⚠  " + warning, file=sys.stderr)
+        print(_glyph("⚠", "!", sys.stderr) + "  " + warning, file=sys.stderr)
     return tools
 
 
@@ -195,9 +231,9 @@ def _run_catalog(args) -> int:
               + ", ".join(os.path.abspath(f) for f in opts.folders))
         return 1
 
-    print("\n" + "─" * 60)
+    print("\n" + _rule())
     print("MetaScraper — catalog done")
-    print("─" * 60)
+    print(_rule())
     print(f"  Files processed : {result.processed}")
     if result.docs_dir:
         print(f"  Per-file docs   : {result.docs_dir}")
@@ -209,7 +245,7 @@ def _run_catalog(args) -> int:
         for output in result.master_outputs:
             print(f"    • {output}")
     _print_failures(result.failures)
-    print("─" * 60)
+    print(_rule())
     return 0 if not result.failures else 2
 
 
@@ -246,9 +282,9 @@ def _run_organize(args) -> int:
         return 0
 
     result = outcome.result
-    print("\n" + "─" * 60)
+    print("\n" + _rule())
     print("MetaScraper — organize done")
-    print("─" * 60)
+    print(_rule())
     print(f"  Copied          : {result.copied}"
           + (f"  ({result.renamed} renamed to avoid collisions)" if result.renamed else ""))
     print(f"  Already in place : {result.skipped}")
@@ -257,25 +293,26 @@ def _run_organize(args) -> int:
     _print_failures(result.failures, label="could not be copied")
     print("\n  Originals are untouched. When you've verified the copies, run:")
     print(f"    metascraper finalize \"{outcome.dest_root}\" --yes")
-    print("─" * 60)
+    print(_rule())
     return 0 if not result.failures else 2
 
 
 def _print_organize_plan(plan, dest_root, failures) -> None:
-    print("\n" + "─" * 60)
+    print("\n" + _rule())
     print(f"MetaScraper — organize (dry run): {len(plan)} cop"
           + ("y" if len(plan) == 1 else "ies"))
-    print("─" * 60)
+    print(_rule())
     for move in plan[:200]:
         rel = os.path.relpath(move.dest, dest_root)
-        marker = {"copy": "→", "skip-identical": "=", "collision-renamed": "→*"}.get(
-            move.action, "→")
+        arrow = _glyph("→", "->")
+        marker = {"copy": arrow, "skip-identical": "=",
+                  "collision-renamed": arrow + "*"}.get(move.action, arrow)
         print(f"  {marker} {rel}")
     if len(plan) > 200:
         print(f"    … and {len(plan) - 200} more")
     print("\n  Nothing was copied (dry run). Re-run without --dry-run to copy.")
     _print_failures(failures)
-    print("─" * 60)
+    print(_rule())
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +340,9 @@ def _run_finalize(args) -> int:
 
     result = outcome.result
     preview = outcome.preview
-    print("\n" + "─" * 60)
+    print("\n" + _rule())
     print("MetaScraper — finalize " + ("(preview)" if preview else "done"))
-    print("─" * 60)
+    print(_rule())
     verb = "Would delete" if preview else "Deleted"
     freed = "Would free" if preview else "Freed"
     print(f"  {verb:15}: {result.deleted} original(s)")
@@ -317,7 +354,7 @@ def _run_finalize(args) -> int:
         print("\n  This was a preview. Re-run with --yes to delete the originals:")
         print(f"    metascraper finalize \"{args.dest}\" --yes"
               + (" --checksum" if args.checksum else ""))
-    print("─" * 60)
+    print(_rule())
     return 0 if not result.problems else 2
 
 
@@ -328,7 +365,7 @@ def _run_finalize(args) -> int:
 def _print_failures(failures, label: str = "had problems") -> None:
     if not failures:
         return
-    print(f"\n  ⚠  {len(failures)} item(s) {label}:")
+    print(f"\n  {_glyph('⚠', '!')}  {len(failures)} item(s) {label}:")
     for failure in failures[:20]:
         print(f"    - {failure}")
     if len(failures) > 20:
@@ -336,6 +373,7 @@ def _print_failures(failures, label: str = "had problems") -> None:
 
 
 def run(argv: Optional[List[str]] = None) -> int:
+    _prepare_output()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         argv = ["catalog"]

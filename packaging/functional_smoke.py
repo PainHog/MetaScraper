@@ -31,18 +31,26 @@ def _command():
     return [sys.executable, "-m", "metascraper"]
 
 
+CRASHES = []  # commands that timed out or exited non-zero
+
+
 def _run(args, cwd):
     print("$ metascraper", " ".join(args), flush=True)
     try:
+        # The child writes in the console/locale encoding (cp1252 on Windows).
         proc = subprocess.run([*_command(), *args], cwd=cwd, capture_output=True,
-                              text=True, timeout=600)
+                              text=True, errors="replace", timeout=600)
     except subprocess.TimeoutExpired:
         print("  (timed out)")
+        CRASHES.append(f"{args[0]} (timed out)")
         return None
     sys.stdout.write(proc.stdout or "")
     sys.stdout.write(proc.stderr or "")
-    if proc.returncode not in (0, 2):
+    # Every command here should succeed outright; a crash after the work is
+    # done still leaves the files in place, so the file checks alone miss it.
+    if proc.returncode != 0:
         print(f"  (exit code {proc.returncode})")
+        CRASHES.append(f"{' '.join(args[:1])} (exit code {proc.returncode})")
     return proc
 
 
@@ -94,6 +102,9 @@ def _count_media(root):
 
 def main() -> int:
     global EXE
+    for stream in (sys.stdout, sys.stderr):  # echoing odd output must not crash
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     if "--exe" in sys.argv:
         EXE = os.path.abspath(sys.argv[sys.argv.index("--exe") + 1])
     failures = []
@@ -161,6 +172,8 @@ def main() -> int:
 
     if EXE:
         check("packaged app window starts", _gui_starts())
+    check("every command exited cleanly" + (f": {CRASHES}" if CRASHES else ""),
+          not CRASHES)
 
     print()
     if failures:

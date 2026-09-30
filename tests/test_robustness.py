@@ -276,3 +276,29 @@ def test_missing_and_unreadable_folders_are_reported(tmp_path, monkeypatch):
     assert any("locked" in w and "Permission denied" in w for w in result.warnings)
     assert any(w.startswith("Folder not found") for w in result.warnings)
     assert [e.message for e in events if e.kind == "warn"] == result.warnings
+
+
+# -- console output ----------------------------------------------------------------
+
+def test_cli_survives_a_cp1252_console(tmp_path):
+    # Windows writes redirected output (files, pipes, scripts) as cp1252, which
+    # can't encode the summary's box-drawing rule; that used to crash every
+    # command right after its work was done.
+    import wave
+    src = tmp_path / "in"
+    src.mkdir()
+    with wave.open(str(src / "take.wav"), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(b"\x00\x00" * 480)
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", PATH="")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.run(
+        [sys.executable, "-m", "metascraper", "catalog", str(src),
+         "-o", str(tmp_path / "out")],
+        capture_output=True, env=env, cwd=root, timeout=120)
+    assert proc.returncode == 0, proc.stderr.decode("cp1252", "replace")
+    out = proc.stdout.decode("cp1252")
+    assert "catalog done" in out and "-" * 60 in out
