@@ -40,14 +40,18 @@ jobs:
           python-version: "3.11"
       - name: Install build dependencies
         run: pip install .[build,dev]
-      - name: GUI and organizer tests on Windows
+      - name: Install FFmpeg and ExifTool (so real-tool tests run on Windows)
+        run: choco install ffmpeg exiftool -y --no-progress
+      - name: Tests on Windows (GUI, organizer, real tools with non-English names)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q tests/test_gui.py tests/test_projects.py tests/test_organizer.py
+        run: pytest -q -rs tests/test_gui.py tests/test_projects.py tests/test_organizer.py tests/test_robustness.py
       - name: Functional smoke on Windows (catalog → organize → finalize)
         run: python packaging/functional_smoke.py
       - name: Build MetaScraper.exe
         run: pyinstaller packaging/MetaScraper.spec
+      - name: Smoke-test the built MetaScraper.exe
+        run: python packaging/functional_smoke.py --exe dist/MetaScraper.exe
       - name: Upload the .exe as a downloadable artifact
         uses: actions/upload-artifact@v4
         with:

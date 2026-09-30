@@ -236,12 +236,14 @@ def plan_moves(
     infos: List[MediaInfo],
     dest_root: str,
     projects: Optional[Mapping[str, Sequence[str]]] = None,
+    unassigned_to_root: bool = False,
 ) -> List[PlannedMove]:
     """Compute where every file should go, resolving collisions deterministically.
 
     Without ``projects`` every file gets one destination in the plain layout.
     With ``projects`` (source path -> project names) a file gets one copy per
-    project it's assigned to, and files assigned to none are left out.
+    project it's assigned to; files assigned to none are left out, or, with
+    ``unassigned_to_root``, go into the plain layout at the library root.
 
     Files are ordered by source path so the plan is stable across runs. Two
     different sources that would land on the same destination get a numbered
@@ -260,6 +262,8 @@ def plan_moves(
             targets: List[Optional[str]] = [None]
         else:
             targets = list(_unique_projects(lookup.get(_source_key(info.path), [])))
+            if not targets and unassigned_to_root:
+                targets = [None]
         for project in targets:
             target = os.path.join(dest_root, dest_relpath(info, project))
             if os.path.abspath(info.path) == target:

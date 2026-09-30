@@ -48,9 +48,9 @@ The **Organize** page is where you submit recordings to projects:
    library are picked up automatically).
 3. Click **Scan files**. Every recording is listed with a checkbox column per
    project — tick one or several projects per file. To tick many at once,
-   select rows (Shift/Ctrl-click, or Ctrl+A) and use **Add selected to** or the
+   select rows (Shift/Ctrl-click, or Ctrl+A) and use **Add to** or the
    right-click menu. The filter box narrows the list by name, camera or date.
-4. **Preview** shows exactly where each copy will go; **Copy to projects**
+4. **Preview** shows exactly where each copy will go; **Copy to library**
    copies each file into every project you ticked:
 
 ```
@@ -62,8 +62,10 @@ Library/
     └── Video/Sony ILCE-7M4/2024-05-11/C0042.MP4   ← same clip, second project
 ```
 
-Files you didn't tick for any project are skipped. The **Already in** column
-shows which projects a file has been copied into before.
+Files you didn't tick for any project are skipped — or, with **Copy files with
+no project to the library root** turned on, copied into the plain
+`Library/Video|Audio/Camera/Date` tree. The **Already in** column shows which
+projects a file has been copied into before.
 
 **Getting the .exe:** every push builds it automatically on a Windows machine
 via GitHub Actions. Open the repo's **Actions → Build Windows App** → the latest
@@ -79,7 +81,12 @@ pyinstaller packaging/MetaScraper.spec
 
 **FFmpeg is not bundled.** Install it once (see [Requirements](#requirements));
 the app shows a banner if it can't find `ffprobe`, and you can point it at
-`ffprobe.exe` directly.
+`ffprobe.exe` (or the folder it's in) under **Settings**.
+
+The exe can also run the command-line tool, for scripts or scheduled tasks:
+`MetaScraper.exe --cli catalog D:\Footage -o D:\Catalog` (any command from
+[Usage](#usage) works after `--cli`). It's a windowed app, so it prints
+nothing — check the exit code and the output files.
 
 To run the GUI from a Python install instead of the packaged exe:
 

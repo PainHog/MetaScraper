@@ -296,3 +296,26 @@ def test_cli_rejects_bad_project_name(tmp_path, capsys):
                     "--project", "a/b"])
     assert code == 1
     assert "Invalid project name" in capsys.readouterr().err
+
+
+def test_unassigned_files_can_go_to_the_library_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(probe.shutil, "which", lambda *_a, **_k: None)
+    src = tmp_path / "in"
+    _write(str(src / "tagged.mp4"))
+    _write(str(src / "loose.mp4"))
+    lib = tmp_path / "lib"
+    tools = service.resolve_tools()
+    scan = service.scan_media(service.ScanOptions(folders=[str(src)]), tools)
+    tagged = next(i.path for i in scan.infos if i.name == "tagged.mp4")
+
+    opts = service.OrganizeOptions(folders=[str(src)], dest=str(lib),
+                                   projects={tagged: ["Doc"]}, unassigned_to_root=True)
+    outcome = service.run_organize(opts, tools, infos=scan.infos)
+    assert outcome.result.copied == 2 and outcome.unassigned == 1
+    assert list((lib / "Doc").rglob("tagged.mp4"))
+    assert list((lib / "Video").rglob("loose.mp4"))
+    assert not list((lib / "Doc").rglob("loose.mp4"))
+
+    # Finalize treats the root copy like any other.
+    result = organizer.finalize_moves(_manifest(str(lib)), checksum=True)
+    assert result.deleted == 2

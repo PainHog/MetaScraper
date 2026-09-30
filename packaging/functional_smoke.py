@@ -9,6 +9,10 @@ real target OS (it does not require FFmpeg — it exercises discovery, document
 and spreadsheet generation, the copy-first organize, and the verified delete).
 
     python packaging/functional_smoke.py
+    python packaging/functional_smoke.py --exe dist/MetaScraper.exe
+
+With ``--exe`` the same workflow runs through the packaged app's ``--cli``
+mode, and the app's window is started to check it launches without crashing.
 """
 
 import os
@@ -18,13 +22,68 @@ import tempfile
 import wave
 
 
+EXE = None  # set by --exe
+
+
+def _command():
+    if EXE:
+        return [EXE, "--cli"]
+    return [sys.executable, "-m", "metascraper"]
+
+
 def _run(args, cwd):
     print("$ metascraper", " ".join(args), flush=True)
-    proc = subprocess.run([sys.executable, "-m", "metascraper", *args],
-                          cwd=cwd, capture_output=True, text=True)
-    sys.stdout.write(proc.stdout)
-    sys.stdout.write(proc.stderr)
+    try:
+        proc = subprocess.run([*_command(), *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        print("  (timed out)")
+        return None
+    sys.stdout.write(proc.stdout or "")
+    sys.stdout.write(proc.stderr or "")
+    if proc.returncode not in (0, 2):
+        print(f"  (exit code {proc.returncode})")
     return proc
+
+
+def _gui_starts(seconds=10):
+    """Launch the packaged window and check it's still running after a while."""
+    env = dict(os.environ)
+    if os.name != "nt":
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    # A one-file app runs as a launcher plus the real app process, so start it
+    # in its own process group and stop the whole tree, not just the launcher.
+    if os.name == "nt":
+        proc = subprocess.Popen([EXE], env=env,
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        proc = subprocess.Popen([EXE], env=env, start_new_session=True)
+    try:
+        proc.wait(timeout=seconds)
+        print(f"  window exited early with code {proc.returncode}")
+        return False
+    except subprocess.TimeoutExpired:
+        return True
+    finally:
+        _kill_tree(proc)
+
+
+def _kill_tree(proc):
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def _count_media(root):
@@ -34,6 +93,9 @@ def _count_media(root):
 
 
 def main() -> int:
+    global EXE
+    if "--exe" in sys.argv:
+        EXE = os.path.abspath(sys.argv[sys.argv.index("--exe") + 1])
     failures = []
 
     def check(label, cond):
@@ -96,6 +158,9 @@ def main() -> int:
         _run(["finalize", plib, "--yes", "--checksum"], work)
         check("finalize removed project originals", _count_media(src2) == 0)
         check("both project copies remain", _count_media(plib) == 4)
+
+    if EXE:
+        check("packaged app window starts", _gui_starts())
 
     print()
     if failures:

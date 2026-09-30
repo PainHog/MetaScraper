@@ -87,6 +87,8 @@ class OrganizeOptions(ScanOptions):
     projects: Optional[Dict[str, List[str]]] = None
     # Projects every file goes into (the CLI's --project), on top of the above.
     all_projects: List[str] = field(default_factory=list)
+    # Copy files with no project into the plain layout instead of skipping them.
+    unassigned_to_root: bool = False
 
     @property
     def uses_projects(self) -> bool:
@@ -116,6 +118,7 @@ class CatalogResult:
     summary: Optional[Dict] = None
     no_media: bool = False
     cancelled: bool = False
+    warnings: List[str] = field(default_factory=list)   # e.g. unreadable folders
 
 
 @dataclass
@@ -124,6 +127,7 @@ class ScanResult:
     failures: List[str] = field(default_factory=list)
     no_media: bool = False
     cancelled: bool = False
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -135,8 +139,9 @@ class OrganizeOutcome:
     dry_run: bool = False
     no_media: bool = False
     failures: List[str] = field(default_factory=list)
-    unassigned: int = 0       # files skipped for having no project
+    unassigned: int = 0       # files with no project (skipped, or sent to the root)
     cancelled: bool = False
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -200,14 +205,22 @@ def resolve_output_dir(
     return os.path.join(os.path.abspath(first), default_name)
 
 
-def _discover(opts: ScanOptions, skip_dirs: Sequence[str]) -> List[str]:
-    return find_media_files(
+def _discover(opts: ScanOptions, skip_dirs: Sequence[str], report: Reporter,
+              warnings: List[str]) -> List[str]:
+    """Find the media files, reporting folders that couldn't be read."""
+    problems: List[str] = []
+    files = find_media_files(
         opts.folders or ["."],
         recursive=opts.recursive,
         extra_extensions=opts.include,
         all_files=opts.all_files,
         skip_dirs=list(skip_dirs),
+        problems=problems,
     )
+    for problem in problems:
+        report(Event("warn", problem))
+    warnings.extend(problems)
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +241,7 @@ def run_catalog(
     result = CatalogResult(output_dir=output_dir,
                            docs_dir=docs_dir if opts.per_file else None)
 
-    files = _discover(opts, skip_dirs=[output_dir])
+    files = _discover(opts, [output_dir], report, result.warnings)
     if not files:
         result.no_media = True
         return result
@@ -298,7 +311,7 @@ def scan_media(
 ) -> ScanResult:
     """Find and read every media file, without writing anything."""
     result = ScanResult()
-    files = _discover(opts, skip_dirs=skip_dirs)
+    files = _discover(opts, skip_dirs, report, result.warnings)
     if not files:
         result.no_media = True
         return result
@@ -348,6 +361,7 @@ def run_organize(
     if infos is None:
         scan = scan_media(opts, tools, report, skip_dirs=[dest_root],
                           should_stop=should_stop)
+        outcome.warnings = scan.warnings
         if scan.cancelled:
             outcome.cancelled = True
             return outcome
@@ -374,7 +388,8 @@ def run_organize(
         outcome.unassigned = sum(
             1 for names in assignments.values() if not any(n.strip() for n in names))
 
-    plan = organizer.plan_moves(infos, dest_root, projects=assignments)
+    plan = organizer.plan_moves(infos, dest_root, projects=assignments,
+                                unassigned_to_root=opts.unassigned_to_root)
     outcome.plan = plan
     outcome.failures = list(probe_failures)
 

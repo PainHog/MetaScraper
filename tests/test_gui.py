@@ -253,6 +253,35 @@ def test_organize_requires_a_project_tick(app, window, tmp_path):
     assert not window.org_run.isEnabled()
 
 
+def test_unassigned_to_root_option(app, window, tmp_path):
+    src = tmp_path / "card"
+    _blob(str(src / "C0001.MP4"))
+    _blob(str(src / "C0002.MP4"))
+    lib = tmp_path / "Library"
+    window.org_folders.add_path(str(src))
+    window.org_dest.set_path(str(lib))
+    window._scan()
+    _wait(app, window)
+    assert not window.org_run.isEnabled()      # nothing ticked, option off
+
+    window.org_to_root.setChecked(True)        # plain organize, no projects
+    assert window.org_run.isEnabled()
+    assert "to the library root" in window.org_summary.text()
+    window._run_organize(dry=False)
+    _wait(app, window)
+    assert window.warnings == []
+    assert len(list((lib / "Video").rglob("*.MP4"))) == 2
+    assert window.settings.value("organize/unassigned_to_root") in (True, "true")
+
+
+def test_scan_warns_about_missing_folders(app, window, tmp_path):
+    window.org_folders.add_path(str(tmp_path / "not-there"))
+    window._scan()
+    _wait(app, window)
+    assert window.warnings and "Folder not found" in window.warnings[-1]
+    assert "Warning: Folder not found" in window.log.toPlainText()
+
+
 def test_projects_and_paths_persist(app, settings, tmp_path, monkeypatch):
     monkeypatch.setattr(probe.shutil, "which", lambda *_a, **_k: None)
     lib = tmp_path / "Library"

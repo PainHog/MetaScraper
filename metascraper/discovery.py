@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, List, Set
+from typing import Iterable, List, Optional, Set
 
 from .models import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 
@@ -25,12 +25,20 @@ def find_media_files(
     all_files: bool = False,
     skip_dirs: Iterable[str] = (),
     skip_hidden: bool = True,
+    problems: Optional[List[str]] = None,
 ) -> List[str]:
     """Return a de-duplicated, sorted list of media file paths.
 
     ``skip_dirs`` lets the caller exclude the output directory so generated
-    documents are never mistaken for source media.
+    documents are never mistaken for source media. Folders that are missing or
+    can't be opened are skipped, with a message appended to ``problems``.
     """
+    problems = problems if problems is not None else []
+
+    def unreadable(error: OSError) -> None:
+        reason = error.strerror or type(error).__name__
+        problems.append(f"Couldn't open folder {error.filename}: {reason}")
+
     extensions = {e.lower() if e.startswith(".") else f".{e.lower()}"
                   for e in extra_extensions}
     extensions |= DEFAULT_MEDIA_EXTENSIONS
@@ -41,11 +49,12 @@ def find_media_files(
 
     for folder in folders:
         if not os.path.exists(folder):
+            problems.append(f"Folder not found: {folder}")
             continue
         if os.path.isfile(folder):
             _consider(folder, extensions, all_files, seen, results, skip_hidden)
             continue
-        for root, dirs, files in os.walk(folder):
+        for root, dirs, files in os.walk(folder, onerror=unreadable):
             # Prune skipped and hidden directories in-place.
             dirs[:] = [
                 d for d in dirs

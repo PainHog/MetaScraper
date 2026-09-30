@@ -33,6 +33,11 @@ a = Analysis(
     runtime_hooks=[],
     excludes=["tkinter"],
     noarchive=False,
+    # python-docx opens its templates via paths like
+    # "docx/parts/../templates/default-footer.xml". Inside the archive the
+    # docx/parts folder doesn't exist on disk, so macOS/Linux can't resolve
+    # the ".."; shipping docx as real files as well keeps the path valid.
+    module_collection_mode={"docx": "pyz+py"},
 )
 
 pyz = PYZ(a.pure)

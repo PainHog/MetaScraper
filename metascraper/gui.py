@@ -781,7 +781,7 @@ class MainWindow(QMainWindow):
 
     def _catalog_done(self, result) -> None:
         if result.no_media:
-            self._warn("No media files were found in the chosen folders.")
+            self._warn(self._no_media_message(result.warnings))
             return
         verb = "cancelled after" if result.cancelled else "complete:"
         self._log(f"Catalog {verb} {result.processed} file(s) processed.")
@@ -808,7 +808,7 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         left.setSpacing(12)
 
-        sources = Card("Source folders", step=1)
+        sources = Card("Sources", step=1)
         self.org_folders = FolderList(height=80)
         self.org_recursive = QCheckBox("Subfolders")
         self.org_recursive.setToolTip("Include subfolders")
@@ -820,30 +820,48 @@ class MainWindow(QMainWindow):
         library = Card("Library", step=2)
         library.setToolTip("Projects are folders here: "
                            "Library / Project / Video|Audio / Camera / Date")
-        self.org_dest = PathRow("Choose the library folder", openable=True,
-                                stacked=True)
+        self.org_dest = PathRow("Choose the library folder")
         self.org_dest.changed.connect(self._library_changed)
+        open_library = _button("Open", "link")
+        open_library.setToolTip("Open the library folder")
+        open_library.clicked.connect(self.org_dest._open)
+        library.header.addWidget(open_library)
         library.body.addWidget(self.org_dest)
         left.addWidget(library)
 
         left.addWidget(self._build_projects_card(), 1)
         left_box = QWidget()
-        left_box.setFixedWidth(300)
+        left_box.setObjectName("pageBody")
         left.setContentsMargins(0, 0, 0, 0)
         left_box.setLayout(left)
-        columns.addWidget(left_box)
+        # Only this column scrolls when the window is short, so the file table
+        # and the Copy button always stay in view.
+        left_scroll = self._scroll(left_box)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(275)
+        left_scroll.setMaximumWidth(320)
+        columns.addWidget(left_scroll)
         columns.addWidget(self._build_assign_card(), 1)
         layout.addLayout(columns, 1)
 
         actions = QHBoxLayout()
-        self.org_checksum = QCheckBox("Verify each copy with a checksum (safer, slower)")
+        options = QVBoxLayout()
+        options.setSpacing(4)
+        self.org_checksum = QCheckBox("Verify copies with a checksum (safer, slower)")
         self.org_checksum.setChecked(True)
-        actions.addWidget(self.org_checksum)
+        options.addWidget(self.org_checksum)
+        self.org_to_root = QCheckBox("Copy files with no project to the library root")
+        self.org_to_root.setToolTip(
+            "Off: files you didn't tick for any project are skipped.\n"
+            "On: they're copied into Library / Video|Audio / Camera / Date.")
+        self.org_to_root.toggled.connect(self._to_root_toggled)
+        options.addWidget(self.org_to_root)
+        actions.addLayout(options)
         actions.addStretch(1)
         self.org_preview = _button("Preview")
         self.org_preview.setToolTip("List where every copy would go, without copying")
         self.org_preview.clicked.connect(lambda: self._run_organize(dry=True))
-        self.org_run = _button("Copy to projects", "primary")
+        self.org_run = _button("Copy to library", "primary")
         self.org_run.clicked.connect(lambda: self._run_organize(dry=False))
         actions.addWidget(self.org_preview)
         actions.addWidget(self.org_run)
@@ -881,8 +899,11 @@ class MainWindow(QMainWindow):
         self.org_filter.setPlaceholderText("Filter by name, camera, date…")
         self.org_filter.setClearButtonEnabled(True)
         tools.addWidget(self.org_filter, 1)
-        self.org_add_to = _button("Add selected to")
-        self.org_remove_from = _button("Remove selected from")
+        self.org_filter.setMinimumWidth(140)
+        self.org_add_to = _button("Add to")
+        self.org_add_to.setToolTip("Tick a project for all selected files")
+        self.org_remove_from = _button("Remove from")
+        self.org_remove_from.setToolTip("Untick a project for all selected files")
         for button, on in ((self.org_add_to, True), (self.org_remove_from, False)):
             menu = QMenu(button)
             menu.aboutToShow.connect(
@@ -920,7 +941,7 @@ class MainWindow(QMainWindow):
         card.body.addWidget(self.org_table, 1)
 
         footer = QHBoxLayout()
-        self.org_summary = _label("", "muted")
+        self.org_summary = _label("", "muted", wrap=True)
         footer.addWidget(self.org_summary, 1)
         self.org_hint = _label("Source folders changed — click Scan files to refresh "
                                "the list.", "hint")
@@ -934,7 +955,7 @@ class MainWindow(QMainWindow):
         header.setMinimumSectionSize(56)
         header.setStretchLastSection(True)
         header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.resizeSection(0, 190)
+        header.resizeSection(0, 170)
         projects = self.org_model.project_columns()
         for column in range(1, self.org_model.columnCount()):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
@@ -1045,17 +1066,31 @@ class MainWindow(QMainWindow):
         self._update_org_summary()
         self._refresh_buttons()
 
-    def _update_org_summary(self) -> None:
+    def _copies_planned(self) -> int:
         files, assigned, copies = self.org_model.stats()
+        if self.org_to_root.isChecked():
+            copies += files - assigned
+        return copies
+
+    def _to_root_toggled(self, checked: bool) -> None:
+        self.settings.setValue("organize/unassigned_to_root", checked)
+        self._update_org_summary()
+        self._refresh_buttons()
+
+    def _update_org_summary(self) -> None:
+        files, assigned, _copies = self.org_model.stats()
+        copies = self._copies_planned()
+        to_root = self.org_to_root.isChecked()
         if not files:
             text = "No files scanned yet."
-        elif not self._projects:
+        elif not self._projects and not to_root:
             text = f"{files} file(s) · create a project to start assigning."
         else:
             text = (f"{files} file(s) · {assigned} assigned · {copies} "
                     f"cop{'y' if copies == 1 else 'ies'} to make")
             if files - assigned:
-                text += f" · {files - assigned} not assigned (skipped)"
+                where = "to the library root" if to_root else "skipped"
+                text += f" · {files - assigned} with no project ({where})"
         self.org_summary.setText(text)
 
     # library + scanning ----------------------------------------------
@@ -1089,7 +1124,7 @@ class MainWindow(QMainWindow):
         self.org_hint.setVisible(False)
         if result.no_media:
             self.org_model.set_infos([])
-            self._warn("No media files were found in the chosen folders.")
+            self._warn(self._no_media_message(result.warnings))
             return
         self.org_model.set_infos(result.infos)
         self.org_model.set_existing(service.copied_projects(self.org_dest.path()))
@@ -1106,8 +1141,10 @@ class MainWindow(QMainWindow):
             self._warn("Scan your source folders first.")
             return
         assignments = self.org_model.assignments()
-        if not assignments:
-            self._warn("Tick at least one project for the files you want to copy.")
+        to_root = self.org_to_root.isChecked()
+        if not assignments and not to_root:
+            self._warn("Tick at least one project for the files you want to copy, "
+                       "or turn on copying files with no project to the library root.")
             return
         dest = self.org_dest.path()
         if not dest:
@@ -1116,6 +1153,7 @@ class MainWindow(QMainWindow):
         opts = OrganizeOptions(
             folders=self.org_folders.paths(), dest=dest, dry_run=dry,
             checksum=self.org_checksum.isChecked(), projects=assignments,
+            unassigned_to_root=to_root,
         )
         infos = self.org_model.infos()
         tools = self._tools()
@@ -1131,7 +1169,7 @@ class MainWindow(QMainWindow):
             return
         if not self.fin_dest.path():
             self.fin_dest.set_path(outcome.dest_root)
-        per_project = Counter(move.project for move in outcome.plan)
+        per_project = Counter(move.project or "library root" for move in outcome.plan)
         breakdown = ", ".join(f"{name}: {n}" for name, n in per_project.items())
         if outcome.dry_run:
             self._log(f"Preview: {len(outcome.plan)} cop"
@@ -1142,7 +1180,7 @@ class MainWindow(QMainWindow):
                 self._log(f"{marker} {os.path.relpath(move.dest, outcome.dest_root)}")
             if len(outcome.plan) > 200:
                 self._log(f"    … and {len(outcome.plan) - 200} more")
-            if outcome.unassigned:
+            if outcome.unassigned and not self.org_to_root.isChecked():
                 self._log(f"  {outcome.unassigned} file(s) have no project and "
                           "will be skipped.")
             self._log("Nothing was copied.")
@@ -1310,6 +1348,10 @@ class MainWindow(QMainWindow):
         self.org_folders.set_paths(_settings_list(s, "organize/sources"))
         self.fin_dest.set_path_quietly(s.value("finalize/library", "") or "")
 
+        self.org_to_root.blockSignals(True)
+        self.org_to_root.setChecked(
+            str(s.value("organize/unassigned_to_root", False)).lower() == "true")
+        self.org_to_root.blockSignals(False)
         self._set_projects(_settings_list(s, "projects"), save=False)
         library = s.value("organize/library", "") or ""
         self.org_dest.set_path_quietly(library)
@@ -1405,6 +1447,8 @@ class MainWindow(QMainWindow):
             self.progress.setRange(0, event.total)
             self.progress.setValue(0)
             self._log(event.message)
+        elif event.kind == "warn":
+            self._log(f"Warning: {event.message}")
         elif event.message:
             self._log(event.message if event.kind != "item" else f"    {event.message}")
 
@@ -1456,7 +1500,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_buttons(self) -> None:
         idle = not self._running
-        _files, _assigned, copies = self.org_model.stats()
+        copies = self._copies_planned()
         for button in (self.cat_run, self.org_scan, self.fin_preview, self.fin_delete):
             button.setEnabled(idle)
         for button in (self.org_preview, self.org_run):
@@ -1476,6 +1520,15 @@ class MainWindow(QMainWindow):
             self._log(f"    - {failure}")
         if len(failures) > 50:
             self._log(f"    … and {len(failures) - 50} more")
+
+    @staticmethod
+    def _no_media_message(warnings: List[str]) -> str:
+        message = "No media files were found in the chosen folders."
+        if warnings:
+            message += "\n\n" + "\n".join(warnings[:10])
+            if len(warnings) > 10:
+                message += f"\n… and {len(warnings) - 10} more"
+        return message
 
     def _warn(self, message: str) -> None:
         QMessageBox.warning(self, APP_NAME, message)

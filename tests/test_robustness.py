@@ -214,3 +214,65 @@ def test_date_folder_uses_the_local_day(monkeypatch):
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+# -- the real tools (run where they're installed; CI installs them on Windows) --
+
+def _wav(path):
+    import wave
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(48000)
+        handle.writeframes(b"\x00\x00" * 4800)
+
+
+@pytest.mark.skipif(not probe.ToolLocation().has_ffprobe, reason="ffprobe not installed")
+def test_real_ffprobe_reads_a_non_english_file_name(tmp_path):
+    path = tmp_path / "Álbum Ñame 日本.wav"
+    _wav(path)
+    info = probe.probe_file(str(path))
+    assert not any("ffprobe" in note for note in info.notes), info.notes
+    assert info.primary_audio is not None
+    assert info.primary_audio.sample_rate == 48000
+
+
+@pytest.mark.skipif(not probe.ToolLocation().has_exiftool, reason="exiftool not installed")
+def test_real_exiftool_reads_a_non_english_file_name(tmp_path):
+    # On Windows this goes through the UTF-8 argfile; "日本" isn't in the
+    # ANSI code page, so a plain command-line argument would lose it.
+    path = tmp_path / "Álbum Ñame 日本.wav"
+    _wav(path)
+    info = probe.probe_file(str(path))
+    assert not any("exiftool" in note for note in info.notes), info.notes
+    assert info.exiftool_raw.get("File:FileName") == path.name
+    assert info.exiftool_raw.get("RIFF:SampleRate") == 48000
+
+
+# -- folders that can't be read ---------------------------------------------------
+
+def test_missing_and_unreadable_folders_are_reported(tmp_path, monkeypatch):
+    from metascraper import service
+
+    good = tmp_path / "card" / "ok"
+    good.mkdir(parents=True)
+    (good / "a.mp4").write_bytes(b"\x00")
+    (tmp_path / "card" / "locked").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path="."):
+        if os.path.basename(str(path)) == "locked":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(probe.shutil, "which", lambda *_a, **_k: None)
+    events = []
+    result = service.scan_media(
+        service.ScanOptions(folders=[str(tmp_path / "card"), str(tmp_path / "gone")]),
+        service.resolve_tools(), report=events.append)
+
+    assert [os.path.basename(i.path) for i in result.infos] == ["a.mp4"]
+    assert any("locked" in w and "Permission denied" in w for w in result.warnings)
+    assert any(w.startswith("Folder not found") for w in result.warnings)
+    assert [e.message for e in events if e.kind == "warn"] == result.warnings

@@ -150,6 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _make_reporter(quiet: bool):
     def report(event: Event) -> None:
+        if event.kind == "warn":
+            print("⚠  " + event.message, file=sys.stderr)
+            return
         if quiet:
             return
         if event.kind == "phase":
