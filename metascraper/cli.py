@@ -3,7 +3,8 @@
 MetaScraper has three subcommands:
 
 * ``catalog``  — write per-file Word documents and update the master catalog.
-* ``organize`` — copy recordings into a tidy ``Video|Audio/Camera/Date`` tree.
+* ``organize`` — copy recordings into a tidy ``Video|Audio/Camera/Date`` tree,
+  optionally inside one or more project folders.
 * ``finalize`` — delete the originals whose copies verify against the manifest.
 
 For backward compatibility, ``metascraper <folders>`` with no subcommand runs
@@ -17,7 +18,7 @@ import os
 import sys
 from typing import List, Optional
 
-from . import __version__, service, utils
+from . import __version__, organizer, service, utils
 from .service import (
     CatalogOptions,
     FinalizeOptions,
@@ -72,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  metascraper ./Footage                       (catalog: the default)\n"
             "  metascraper catalog ./Footage ./Audio -o ./Catalog\n"
             "  metascraper organize ./Footage -o ./Library\n"
+            "  metascraper organize ./Footage -o ./Library --project \"Wildlife Doc\"\n"
             "  metascraper finalize ./Library --yes        (delete verified originals)\n"
         ),
     )
@@ -114,6 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Show the planned moves without copying anything.")
     org.add_argument("--checksum", action="store_true",
                      help="Verify copies with a SHA-256 checksum (slower, strongest).")
+    org.add_argument(
+        "-p", "--project", dest="projects", action="append", default=[],
+        metavar="NAME",
+        help="Copy every file into <dest>/NAME/Video|Audio/... instead. Repeat to "
+             "copy into several projects (one copy each).",
+    )
     org.set_defaults(func=_run_organize)
 
     fin = subparsers.add_parser(
@@ -207,10 +215,16 @@ def _run_catalog(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _run_organize(args) -> int:
+    for name in args.projects:
+        problem = organizer.project_name_problem(name)
+        if problem:
+            print(f"Invalid project name '{name}': {problem}", file=sys.stderr)
+            return 1
     opts = OrganizeOptions(
         folders=args.folders or ["."], recursive=args.recursive,
         include=_split_include(args.include), all_files=args.all_files,
         dest=args.dest, dry_run=args.dry_run, checksum=args.checksum,
+        all_projects=[name.strip() for name in args.projects],
     )
     tools = _resolve_tools(args)
     outcome = service.run_organize(opts, tools, report=_make_reporter(args.quiet))
@@ -219,6 +233,10 @@ def _run_organize(args) -> int:
         print("No media files were found. Checked: "
               + ", ".join(os.path.abspath(f) for f in opts.folders))
         return 1
+
+    if outcome.cancelled:
+        print("Organize was cancelled.", file=sys.stderr)
+        return 2
 
     if outcome.dry_run:
         _print_organize_plan(outcome.plan, outcome.dest_root, outcome.failures)
@@ -242,7 +260,8 @@ def _run_organize(args) -> int:
 
 def _print_organize_plan(plan, dest_root, failures) -> None:
     print("\n" + "─" * 60)
-    print(f"MetaScraper — organize (dry run): {len(plan)} file(s)")
+    print(f"MetaScraper — organize (dry run): {len(plan)} cop"
+          + ("y" if len(plan) == 1 else "ies"))
     print("─" * 60)
     for move in plan[:200]:
         rel = os.path.relpath(move.dest, dest_root)

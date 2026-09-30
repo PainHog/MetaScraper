@@ -8,7 +8,9 @@ MetaScraper has three commands:
   and 📚 keep a running **master catalog** as both a formatted **Word document**
   and a sortable **Excel spreadsheet (`.xlsx`)**.
 - **`organize`** — 🗂️ **copy** your recordings into a tidy
-  `Video|Audio / Camera / Date` tree. Your originals are never touched.
+  `Video|Audio / Camera / Date` tree — optionally sorted into **projects**, with
+  a recording copied into as many projects as it belongs to. Your originals are
+  never touched.
 - **`finalize`** — 🧹 once you've checked the copies, **delete the originals**
   that verify against the copy — the safe "move later" step.
 
@@ -29,10 +31,39 @@ You can use MetaScraper two ways: a **desktop app** (a real window — see
 
 ## The Windows app
 
-MetaScraper ships as a windowed desktop app — `MetaScraper.exe` — with tabs for
-**Catalog**, **Organize**, and **Finalize**: pick or drag-and-drop folders,
-tick a few options, click **Run**, and watch the progress. No Python required to
-run it.
+MetaScraper ships as a windowed desktop app — `MetaScraper.exe` — with pages for
+**Catalog**, **Organize**, **Finalize** and **Settings**: pick or drag-and-drop
+folders, tick a few options, click **Run**, and watch the progress (with a
+**Cancel** button). It follows your Windows light/dark setting, and remembers
+your folders, projects and tool locations between sessions. No Python required
+to run it.
+
+### Sorting recordings into projects
+
+The **Organize** page is where you submit recordings to projects:
+
+1. Add your source folders (an SD card, a download folder…) and pick a
+   **Library** folder.
+2. Create your **projects** (they're saved; project folders already in the
+   library are picked up automatically).
+3. Click **Scan files**. Every recording is listed with a checkbox column per
+   project — tick one or several projects per file. To tick many at once,
+   select rows (Shift/Ctrl-click, or Ctrl+A) and use **Add selected to** or the
+   right-click menu. The filter box narrows the list by name, camera or date.
+4. **Preview** shows exactly where each copy will go; **Copy to projects**
+   copies each file into every project you ticked:
+
+```
+Library/
+├── Wildlife Doc/
+│   ├── Video/Sony ILCE-7M4/2024-05-11/C0042.MP4
+│   └── Audio/Zoom H6/2024-05-11/ZOOM0007.WAV
+└── Client Reel/
+    └── Video/Sony ILCE-7M4/2024-05-11/C0042.MP4   ← same clip, second project
+```
+
+Files you didn't tick for any project are skipped. The **Already in** column
+shows which projects a file has been copied into before.
 
 **Getting the .exe:** every push builds it automatically on a Windows machine
 via GitHub Actions. Open the repo's **Actions → Build Windows App** → the latest
@@ -189,10 +220,19 @@ with no camera/audio distinction land under **Other**.
 | `-o, --dest DIR` | Destination root. Defaults to a `MetaScraper_Organized` folder beside the input. |
 | `--dry-run` | Show the planned moves without copying anything. |
 | `--checksum` | Verify each copy with a SHA-256 checksum (slower, strongest guarantee). |
+| `-p, --project NAME` | Copy every file into `DEST/NAME/Video\|Audio/...` instead. Repeat to copy into several projects (one copy each). |
 | `--no-recursive`, `--include`, `--all-files`, `--ffprobe`, `--exiftool`, `-q` | As for `catalog`. |
 
 **Originals are never modified or deleted by `organize`.** Every copy is
 recorded in a `.metascraper_organize_manifest.json` at the destination.
+
+```bash
+# Copy a card into two projects at once
+metascraper organize ./SDCard -o "~/Media Library" --project "Wildlife Doc" --project "Client Reel"
+```
+
+The command line assigns every file to the projects you name; to choose
+projects file by file, use the app's Organize page.
 
 ### `finalize` — delete the originals (the "move")
 
@@ -201,7 +241,8 @@ metascraper finalize DEST [--checksum] [--yes]
 ```
 
 Once you've confirmed the copies are good, `finalize` removes each original —
-but only after re-verifying that its copy still matches. **Without `--yes` it
+but only after re-verifying that its copy still matches. A recording copied into
+several projects is deleted only when **every** copy verifies. **Without `--yes` it
 just previews**; nothing is deleted until you re-run with `--yes`.
 
 ```bash

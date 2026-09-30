@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 from .catalog import MasterCatalog
 from .discovery import find_media_files
+from .models import MediaInfo
 from .probe import ToolLocation, probe_file
 from .report import write_report
 from . import organizer
@@ -44,10 +45,15 @@ class Event:
 
 
 Reporter = Callable[[Event], None]
+StopCheck = Callable[[], bool]
 
 
 def _noop(_event: Event) -> None:
     pass
+
+
+def _never() -> bool:
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +81,16 @@ class OrganizeOptions(ScanOptions):
     dest: Optional[str] = None
     dry_run: bool = False
     checksum: bool = False
+    # Per-file project assignments (source path -> project names). When set,
+    # each file is copied once into every project it's assigned to, and files
+    # assigned to none are skipped. None keeps the plain Video|Audio layout.
+    projects: Optional[Dict[str, List[str]]] = None
+    # Projects every file goes into (the CLI's --project), on top of the above.
+    all_projects: List[str] = field(default_factory=list)
+
+    @property
+    def uses_projects(self) -> bool:
+        return self.projects is not None or bool(self.all_projects)
 
 
 @dataclass
@@ -99,6 +115,15 @@ class CatalogResult:
     failures: List[str] = field(default_factory=list)
     summary: Optional[Dict] = None
     no_media: bool = False
+    cancelled: bool = False
+
+
+@dataclass
+class ScanResult:
+    infos: List[MediaInfo] = field(default_factory=list)
+    failures: List[str] = field(default_factory=list)
+    no_media: bool = False
+    cancelled: bool = False
 
 
 @dataclass
@@ -110,6 +135,8 @@ class OrganizeOutcome:
     dry_run: bool = False
     no_media: bool = False
     failures: List[str] = field(default_factory=list)
+    unassigned: int = 0       # files skipped for having no project
+    cancelled: bool = False
 
 
 @dataclass
@@ -192,6 +219,7 @@ def run_catalog(
     tools: ToolLocation,
     report: Reporter = _noop,
     generated_at: Optional[datetime] = None,
+    should_stop: StopCheck = _never,
 ) -> CatalogResult:
     generated_at = generated_at or datetime.now().astimezone()
     folders = opts.folders or ["."]
@@ -214,7 +242,12 @@ def run_catalog(
 
     doc_names = plan_doc_names(files, docs_dir) if opts.per_file else {}
 
+    done = 0
     for index, path in enumerate(files, start=1):
+        if should_stop():
+            result.cancelled = True
+            break
+        done = index
         rel = display_path(path)
         report(Event("item", rel, index, len(files)))
         try:
@@ -235,8 +268,9 @@ def run_catalog(
             result.new_count += int(is_new)
             result.updated_count += int(not is_new)
 
-    result.processed = len(files)
+    result.processed = done
 
+    # Save even after a cancel, so the files already read aren't lost.
     if catalog is not None:
         catalog.save_json(generated_at)
         docx_path = os.path.join(output_dir, f"{opts.master_name}.docx")
@@ -246,7 +280,8 @@ def run_catalog(
         result.master_outputs = [docx_path, xlsx_path]
         result.summary = catalog.summary()
 
-    report(Event("done", "Catalog complete.", len(files), len(files)))
+    report(Event("done", "Catalog cancelled." if result.cancelled
+                 else "Catalog complete.", done, len(files)))
     return result
 
 
@@ -254,59 +289,121 @@ def run_catalog(
 # organize
 # ---------------------------------------------------------------------------
 
+def scan_media(
+    opts: ScanOptions,
+    tools: ToolLocation,
+    report: Reporter = _noop,
+    skip_dirs: Sequence[str] = (),
+    should_stop: StopCheck = _never,
+) -> ScanResult:
+    """Find and read every media file, without writing anything."""
+    result = ScanResult()
+    files = _discover(opts, skip_dirs=skip_dirs)
+    if not files:
+        result.no_media = True
+        return result
+
+    report(Event("phase", f"Reading {len(files)} media file(s).", 0, len(files)))
+    for index, path in enumerate(files, start=1):
+        if should_stop():
+            result.cancelled = True
+            break
+        rel = display_path(path)
+        report(Event("item", rel, index, len(files)))
+        try:
+            result.infos.append(probe_file(path, tools=tools))
+        except Exception as exc:  # noqa: BLE001
+            result.failures.append(f"{rel}: {exc}")
+    return result
+
+
+def organize_dest(opts: OrganizeOptions) -> str:
+    """The library root an organize run with these options writes into."""
+    return resolve_output_dir(opts.folders or ["."], opts.dest, DEFAULT_ORGANIZE_DIRNAME)
+
+
+def _within(path: str, root: str) -> bool:
+    path = os.path.normcase(os.path.abspath(path))
+    root = os.path.normcase(os.path.abspath(root))
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def run_organize(
     opts: OrganizeOptions,
     tools: ToolLocation,
     report: Reporter = _noop,
     generated_at: Optional[datetime] = None,
+    infos: Optional[List[MediaInfo]] = None,
+    should_stop: StopCheck = _never,
 ) -> OrganizeOutcome:
+    """Copy recordings into the library.
+
+    Pass ``infos`` (from :func:`scan_media`) to organize files that were already
+    read, instead of scanning ``opts.folders`` again.
+    """
     generated_at = generated_at or datetime.now().astimezone()
-    folders = opts.folders or ["."]
-    dest_root = resolve_output_dir(folders, opts.dest, DEFAULT_ORGANIZE_DIRNAME)
+    dest_root = organize_dest(opts)
     outcome = OrganizeOutcome(dest_root=dest_root, dry_run=opts.dry_run)
 
-    files = _discover(opts, skip_dirs=[dest_root])
-    if not files:
-        outcome.no_media = True
-        return outcome
+    if infos is None:
+        scan = scan_media(opts, tools, report, skip_dirs=[dest_root],
+                          should_stop=should_stop)
+        if scan.cancelled:
+            outcome.cancelled = True
+            return outcome
+        infos, probe_failures = scan.infos, scan.failures
+        if scan.no_media:
+            outcome.no_media = True
+            return outcome
+    else:
+        # Never re-copy files that already live inside the library.
+        infos = [info for info in infos if not _within(info.path, dest_root)]
+        probe_failures = []
+        if not infos:
+            outcome.no_media = True
+            return outcome
 
-    report(Event("phase", f"Reading {len(files)} media file(s).", 0, len(files)))
+    assignments = None
+    if opts.uses_projects:
+        chosen = {os.path.abspath(k): v for k, v in (opts.projects or {}).items()}
+        assignments = {
+            info.path: list(chosen.get(os.path.abspath(info.path), []))
+            + list(opts.all_projects)
+            for info in infos
+        }
+        outcome.unassigned = sum(
+            1 for names in assignments.values() if not any(n.strip() for n in names))
 
-    infos = []
-    probe_failures: List[str] = []
-    for index, path in enumerate(files, start=1):
-        rel = display_path(path)
-        report(Event("item", rel, index, len(files)))
-        try:
-            infos.append(probe_file(path, tools=tools))
-        except Exception as exc:  # noqa: BLE001
-            probe_failures.append(f"{rel}: {exc}")
-
-    plan = organizer.plan_moves(infos, dest_root)
+    plan = organizer.plan_moves(infos, dest_root, projects=assignments)
     outcome.plan = plan
     outcome.failures = list(probe_failures)
 
     if opts.dry_run:
-        report(Event("done", f"Planned {len(plan)} move(s) (dry run).",
-                     len(files), len(files)))
+        report(Event("done", f"Planned {len(plan)} cop{'y' if len(plan) == 1 else 'ies'} "
+                     "(dry run).", len(plan), len(plan)))
         return outcome
 
     manifest_path = os.path.join(dest_root, organizer.MANIFEST_NAME)
     manifest = organizer.OrganizeManifest.load(manifest_path, dest_root)
+    report(Event("phase", f"Copying {len(plan)} file(s) into {dest_root}", 0, len(plan)))
+    counter = {"n": 0}
 
     def on_copy(kind: str, move) -> None:
-        if kind in ("copy", "already"):
-            report(Event("item", os.path.relpath(move.dest, dest_root)))
+        counter["n"] += 1
+        report(Event("item", os.path.relpath(move.dest, dest_root),
+                     counter["n"], len(plan)))
 
     result = organizer.execute_plan(
         plan, manifest, checksum=opts.checksum, generated_at=generated_at,
-        on_event=on_copy,
+        on_event=on_copy, should_stop=should_stop,
     )
     result.failures.extend(probe_failures)
     result.failed += len(probe_failures)
     outcome.result = result
     outcome.manifest_path = manifest_path
-    report(Event("done", f"Copied {result.copied} file(s).", len(files), len(files)))
+    outcome.cancelled = result.cancelled
+    report(Event("done", ("Organize cancelled — " if result.cancelled else "")
+                 + f"copied {result.copied} file(s).", len(plan), len(plan)))
     return outcome
 
 
@@ -326,6 +423,7 @@ def run_finalize(
     opts: FinalizeOptions,
     report: Reporter = _noop,
     generated_at: Optional[datetime] = None,
+    should_stop: StopCheck = _never,
 ) -> FinalizeOutcome:
     generated_at = generated_at or datetime.now().astimezone()
     manifest_path, dest_root = resolve_manifest(opts.dest)
@@ -352,10 +450,24 @@ def run_finalize(
 
     outcome.result = organizer.finalize_moves(
         manifest, checksum=opts.checksum, dry_run=preview,
-        generated_at=generated_at, on_event=on_delete,
+        generated_at=generated_at, on_event=on_delete, should_stop=should_stop,
     )
     report(Event("done", "Finalize complete." if not preview else "Preview complete."))
     return outcome
+
+
+def list_projects(dest: Optional[str]) -> List[str]:
+    """Projects already present in a library folder (empty if there's none)."""
+    if not dest or not os.path.isdir(dest):
+        return []
+    return organizer.list_projects(dest)
+
+
+def copied_projects(dest: Optional[str]) -> Dict[str, List[str]]:
+    """Source file -> projects it has already been copied into, for a library."""
+    if not dest or not os.path.isdir(dest):
+        return {}
+    return organizer.copied_projects(dest)
 
 
 # ---------------------------------------------------------------------------

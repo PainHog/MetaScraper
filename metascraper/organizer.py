@@ -6,13 +6,18 @@ The layout is::
       Video/<Camera>/<YYYY-MM-DD>/<original file>
       Audio/<Camera>/<YYYY-MM-DD>/<original file>
 
+or, when files are assigned to projects, one copy per project::
+
+    <dest>/<Project>/Video|Audio/<Camera>/<YYYY-MM-DD>/<original file>
+
 Values come from the metadata MetaScraper already extracts. The flow is
 deliberately two-step and non-destructive:
 
 1. :func:`execute_plan` copies each file into the tree, verifies the copy, and
    records every operation in a manifest. The originals are never touched.
 2. :func:`finalize_moves` later deletes only the originals whose copies
-   re-verify against the manifest.
+   re-verify against the manifest — every copy, when a file went to several
+   projects.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ import re
 import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from .models import MediaInfo
 
@@ -41,6 +46,10 @@ _WINDOWS_RESERVED = {
 
 UNKNOWN_CAMERA = "Unknown Camera"
 UNKNOWN_DATE = "Unknown Date"
+
+# Top-level folders of the plain (project-less) layout. A project may not use
+# one of these names, or it would be indistinguishable from that layout.
+KIND_FOLDERS = ("Video", "Audio", "Other")
 
 
 def sanitize_component(name: str, fallback: str = "Untitled") -> str:
@@ -88,15 +97,103 @@ def top_folder(info: MediaInfo) -> str:
     return "Other"
 
 
-def dest_relpath(info: MediaInfo) -> str:
+def dest_relpath(info: MediaInfo, project: Optional[str] = None) -> str:
     """Relative destination path (folders + original file name) for a file."""
-    parts = [
+    parts = [project_folder(project)] if project else []
+    parts += [
         top_folder(info),
         camera_label(info),
         date_label(info),
         sanitize_component(info.name, fallback="media"),
     ]
     return os.path.join(*parts)
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+def project_folder(name: str) -> str:
+    """The folder name a project's copies go into."""
+    return sanitize_component(name, fallback="Untitled Project")
+
+
+def project_name_problem(name: str) -> Optional[str]:
+    """Why ``name`` can't be used as a project, or None if it's fine."""
+    stripped = (name or "").strip()
+    if not stripped:
+        return "Enter a project name."
+    if stripped.lower() in (k.lower() for k in KIND_FOLDERS):
+        return f"'{stripped}' is reserved for the library's own folders."
+    if project_folder(stripped) != stripped:
+        return ("That name can't be used as a folder name. Avoid "
+                '< > : " / \\ | ? * and a trailing dot or space.')
+    return None
+
+
+def _unique_projects(names: Iterable[str]) -> List[str]:
+    """Drop blanks and names that map to the same folder (case-insensitively,
+    since Windows folders are), keeping the first spelling."""
+    seen: Set[str] = set()
+    unique: List[str] = []
+    for name in names:
+        if not name or not str(name).strip():
+            continue
+        key = project_folder(str(name).strip()).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(str(name).strip())
+    return unique
+
+
+def list_projects(dest_root: str) -> List[str]:
+    """Projects already present in a library.
+
+    A project is any folder recorded as one in the manifest, or any top-level
+    folder that holds a ``Video``/``Audio``/``Other`` tree.
+    """
+    dest_root = os.path.abspath(dest_root)
+    found: List[str] = []
+    manifest_path = os.path.join(dest_root, MANIFEST_NAME)
+    if os.path.exists(manifest_path):
+        manifest = OrganizeManifest.load(manifest_path, dest_root)
+        found += [op["project"] for op in manifest.operations.values()
+                  if op.get("project")]
+    try:
+        entries = sorted(os.scandir(dest_root), key=lambda e: e.name.lower())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name in KIND_FOLDERS:
+            continue
+        try:
+            if entry.is_dir() and any(
+                os.path.isdir(os.path.join(entry.path, kind)) for kind in KIND_FOLDERS
+            ):
+                found.append(entry.name)
+        except OSError:
+            continue
+    return _unique_projects(found)
+
+
+def copied_projects(dest_root: str) -> Dict[str, List[str]]:
+    """Map each source file to the projects it has already been copied into."""
+    dest_root = os.path.abspath(dest_root)
+    manifest_path = os.path.join(dest_root, MANIFEST_NAME)
+    result: Dict[str, List[str]] = {}
+    if not os.path.exists(manifest_path):
+        return result
+    manifest = OrganizeManifest.load(manifest_path, dest_root)
+    for op in manifest.operations.values():
+        if op.get("status") == "copied" and op.get("project"):
+            projects = result.setdefault(_source_key(op["source"]), [])
+            if op["project"] not in projects:
+                projects.append(op["project"])
+    return result
+
+
+def _source_key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +209,7 @@ class PlannedMove:
     date: str
     size: Optional[int]
     action: str = "copy"  # copy | skip-identical | collision-renamed
+    project: Optional[str] = None
 
     def as_record(self) -> Dict:
         data = asdict(self)
@@ -129,8 +227,16 @@ def _disambiguate(dest: str, taken: set) -> str:
     return f"{root} ({counter}){ext}"
 
 
-def plan_moves(infos: List[MediaInfo], dest_root: str) -> List[PlannedMove]:
+def plan_moves(
+    infos: List[MediaInfo],
+    dest_root: str,
+    projects: Optional[Mapping[str, Sequence[str]]] = None,
+) -> List[PlannedMove]:
     """Compute where every file should go, resolving collisions deterministically.
+
+    Without ``projects`` every file gets one destination in the plain layout.
+    With ``projects`` (source path -> project names) a file gets one copy per
+    project it's assigned to, and files assigned to none are left out.
 
     Files are ordered by source path so the plan is stable across runs. Two
     different sources that would land on the same destination get a numbered
@@ -138,28 +244,37 @@ def plan_moves(infos: List[MediaInfo], dest_root: str) -> List[PlannedMove]:
     """
     dest_root = os.path.abspath(dest_root)
     ordered = sorted(infos, key=lambda i: i.path)
+    lookup = None
+    if projects is not None:
+        lookup = {_source_key(path): names for path, names in projects.items()}
     taken: set = set()
     plan: List[PlannedMove] = []
 
     for info in ordered:
-        target = os.path.join(dest_root, dest_relpath(info))
-        if os.path.abspath(info.path) == target:
-            action = "skip-identical"
-        elif target in taken:
-            target = _disambiguate(target, taken)
-            action = "collision-renamed"
+        if lookup is None:
+            targets: List[Optional[str]] = [None]
         else:
-            action = "copy"
-        taken.add(target)
-        plan.append(PlannedMove(
-            source=os.path.abspath(info.path),
-            dest=target,
-            media_kind=info.media_kind,
-            camera=camera_label(info),
-            date=date_label(info),
-            size=info.size_bytes,
-            action=action,
-        ))
+            targets = list(_unique_projects(lookup.get(_source_key(info.path), [])))
+        for project in targets:
+            target = os.path.join(dest_root, dest_relpath(info, project))
+            if os.path.abspath(info.path) == target:
+                action = "skip-identical"
+            elif target in taken:
+                target = _disambiguate(target, taken)
+                action = "collision-renamed"
+            else:
+                action = "copy"
+            taken.add(target)
+            plan.append(PlannedMove(
+                source=os.path.abspath(info.path),
+                dest=target,
+                media_kind=info.media_kind,
+                camera=camera_label(info),
+                date=date_label(info),
+                size=info.size_bytes,
+                action=action,
+                project=project,
+            ))
     return plan
 
 
@@ -256,6 +371,7 @@ class OrganizeResult:
     failed: int = 0
     failures: List[str] = field(default_factory=list)
     plan: List[PlannedMove] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def _resolve_ondisk_collision(dest: str, source: str, *, checksum: bool) -> str:
@@ -295,8 +411,13 @@ def execute_plan(
     checksum: bool = False,
     generated_at: Optional[datetime] = None,
     on_event: Optional[Callable[[str, PlannedMove], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> OrganizeResult:
-    """Copy each planned file into place and verify it, updating the manifest."""
+    """Copy each planned file into place and verify it, updating the manifest.
+
+    ``should_stop`` is checked between files; when it returns True the run ends
+    early, and the manifest still records every copy made so far.
+    """
     generated_at = generated_at or datetime.now().astimezone()
     result = OrganizeResult(plan=plan)
 
@@ -304,7 +425,18 @@ def execute_plan(
         if on_event:
             on_event(kind, move)
 
+    try:
+        _execute(plan, manifest, result, checksum, generated_at, notify, should_stop)
+    finally:
+        manifest.save(generated_at)
+    return result
+
+
+def _execute(plan, manifest, result, checksum, generated_at, notify, should_stop):
     for move in plan:
+        if should_stop and should_stop():
+            result.cancelled = True
+            return
         if move.action == "skip-identical":
             result.skipped += 1
             notify("skip", move)
@@ -345,9 +477,6 @@ def execute_plan(
         manifest.record(_op_record(move, generated_at, "copied", checksum=checksum))
         notify("copy", move)
 
-    manifest.save(generated_at)
-    return result
-
 
 def _op_record(
     move: PlannedMove,
@@ -364,6 +493,7 @@ def _op_record(
         "date": move.date,
         "size": move.size,
         "action": move.action,
+        "project": move.project,
         "status": status,
         "copied_at": generated_at.isoformat() if status == "copied" else None,
         "source_deleted": False,
@@ -389,6 +519,7 @@ class FinalizeResult:
     failed: int = 0
     freed_bytes: int = 0
     problems: List[str] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def finalize_moves(
@@ -398,12 +529,15 @@ def finalize_moves(
     dry_run: bool = False,
     generated_at: Optional[datetime] = None,
     on_event: Optional[Callable[[str, Dict], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> FinalizeResult:
     """Delete originals whose copies re-verify against the manifest.
 
-    Nothing is deleted unless the destination still exists and matches the
-    source (size, and checksum when requested). Anything that fails to verify is
-    left in place and reported. With ``dry_run`` the deletions are only counted.
+    A file copied into several projects has several copies; its original is
+    deleted only when *every* one of them still exists and matches (size, and
+    checksum when requested), and no copy of it failed. Anything else is left
+    in place and reported. With ``dry_run`` the deletions are only counted.
+    Counts are per original file, not per copy.
     """
     generated_at = generated_at or datetime.now().astimezone()
     result = FinalizeResult()
@@ -412,47 +546,92 @@ def finalize_moves(
         if on_event:
             on_event(kind, op)
 
+    groups: Dict[str, List[Dict]] = {}
     for op in manifest.pending_deletions():
-        source = op["source"]
-        dest = op["dest"]
+        groups.setdefault(_source_key(op["source"]), []).append(op)
 
-        if not os.path.exists(source):
-            # Already gone (e.g. a previous finalize); mark it done.
+    # A failed copy blocks deletion unless that same project later got a copy.
+    copied_to = {(_source_key(op["source"]), op.get("project"))
+                 for op in manifest.operations.values()
+                 if op.get("status") == "copied"}
+    failed_copies: Dict[str, List[Dict]] = {}
+    for op in manifest.operations.values():
+        key = _source_key(op["source"])
+        if op.get("status") == "failed" and (key, op.get("project")) not in copied_to:
+            failed_copies.setdefault(key, []).append(op)
+
+    try:
+        for key, ops in groups.items():
+            if should_stop and should_stop():
+                result.cancelled = True
+                break
+            _finalize_one(ops, failed_copies.get(key, []), result, checksum,
+                          dry_run, generated_at, notify)
+    finally:
+        if not dry_run:
+            manifest.save(generated_at)
+    return result
+
+
+def _finalize_one(ops, failed_ops, result, checksum, dry_run, generated_at, notify):
+    source = ops[0]["source"]
+
+    if not os.path.exists(source):
+        # Already gone (e.g. a previous finalize); mark it done.
+        for op in ops:
             op["source_deleted"] = True
-            result.skipped += 1
             notify("gone", op)
-            continue
+        result.skipped += 1
+        return
 
-        want_checksum = checksum or bool(op.get("sha256"))
-        if not files_match(source, dest, checksum=want_checksum):
-            result.failed += 1
+    if failed_ops:
+        result.failed += 1
+        where = ", ".join(op["dest"] for op in failed_ops)
+        result.problems.append(f"{source}: a copy failed ({where}) — original kept")
+        notify("unverified", ops[0])
+        return
+
+    source_digest: Dict[str, str] = {}
+
+    def verified(op: Dict) -> bool:
+        dest = op["dest"]
+        if not (os.path.exists(dest)
+                and os.path.getsize(source) == os.path.getsize(dest)):
+            return False
+        if checksum or op.get("sha256"):
+            if "sha" not in source_digest:
+                source_digest["sha"] = sha256_of(source)
+            return source_digest["sha"] == sha256_of(dest)
+        return True
+
+    bad = [op for op in ops if not verified(op)]
+    if bad:
+        result.failed += 1
+        for op in bad:
             result.problems.append(
-                f"{source}: copy at {dest} did not verify — original kept"
+                f"{source}: copy at {op['dest']} did not verify — original kept"
             )
-            notify("unverified", op)
-            continue
+        notify("unverified", bad[0])
+        return
 
-        size = op.get("size") or 0
-        if dry_run:
-            result.deleted += 1
-            result.freed_bytes += size
-            notify("would-delete", op)
-            continue
-
-        try:
-            os.remove(source)
-        except OSError as exc:
-            result.failed += 1
-            result.problems.append(f"{source}: could not delete — {exc}")
-            notify("fail", op)
-            continue
-
-        op["source_deleted"] = True
-        op["source_deleted_at"] = generated_at.isoformat()
+    size = max((op.get("size") or 0) for op in ops)
+    if dry_run:
         result.deleted += 1
         result.freed_bytes += size
-        notify("delete", op)
+        notify("would-delete", ops[0])
+        return
 
-    if not dry_run:
-        manifest.save(generated_at)
-    return result
+    try:
+        os.remove(source)
+    except OSError as exc:
+        result.failed += 1
+        result.problems.append(f"{source}: could not delete — {exc}")
+        notify("fail", ops[0])
+        return
+
+    for op in ops:
+        op["source_deleted"] = True
+        op["source_deleted_at"] = generated_at.isoformat()
+    result.deleted += 1
+    result.freed_bytes += size
+    notify("delete", ops[0])

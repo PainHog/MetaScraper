@@ -7,6 +7,6 @@ running master catalog as both a formatted ``.docx`` and an ``.xlsx``
 spreadsheet.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = ["__version__"]
