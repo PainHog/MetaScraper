@@ -25,7 +25,8 @@ def _info(path, kind="Video", make=None, model=None, recorded=None,
     )
 
 
-REC = datetime(2024, 5, 11, 18, 32, 7, tzinfo=timezone.utc)
+# Midday UTC, so the local calendar date is the 11th in any timezone.
+REC = datetime(2024, 5, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def test_sanitize_component():

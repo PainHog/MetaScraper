@@ -16,6 +16,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Pt, RGBColor, Twips
 
+from .utils import xml_safe as _safe
+
 
 # --- Brand palette (deep slate + warm accent) ---------------------------------
 INK = RGBColor(0x1F, 0x2A, 0x37)        # near-black slate for body text
@@ -118,20 +120,20 @@ def add_title_block(
     """Add a branded title block: small eyebrow, big title, thin accent rule."""
     if eyebrow:
         p = document.add_paragraph()
-        run = p.add_run(eyebrow.upper())
+        run = p.add_run(_safe(eyebrow.upper()))
         _set_run(run, bold=True, size=9, color=ACCENT)
         run.font.name = BODY_FONT
         _letter_spacing(run, 60)
         p.paragraph_format.space_after = Pt(2)
 
     title_p = document.add_paragraph()
-    title_run = title_p.add_run(title)
+    title_run = title_p.add_run(_safe(title))
     _set_run(title_run, bold=True, size=22, color=BRAND)
     title_p.paragraph_format.space_after = Pt(2)
 
     if subtitle:
         sub_p = document.add_paragraph()
-        sub_run = sub_p.add_run(subtitle)
+        sub_run = sub_p.add_run(_safe(subtitle))
         _set_run(sub_run, size=11, color=MUTED)
         sub_p.paragraph_format.space_after = Pt(6)
 
@@ -166,7 +168,7 @@ def add_section_heading(document: Document, text: str) -> None:
     p.paragraph_format.space_after = Pt(4)
     tick = p.add_run("▎ ")
     _set_run(tick, bold=True, size=12, color=ACCENT)
-    run = p.add_run(text)
+    run = p.add_run(_safe(text))
     _set_run(run, bold=True, size=12.5, color=BRAND)
 
 
@@ -194,12 +196,12 @@ def add_key_value_table(document, rows: Iterable, label_width_in=2.1):
 
         lp = label_cell.paragraphs[0]
         lp.paragraph_format.space_after = Pt(0)
-        lrun = lp.add_run(label)
+        lrun = lp.add_run(_safe(label))
         _set_run(lrun, bold=True, size=9.5, color=BRAND)
 
         vp = value_cell.paragraphs[0]
         vp.paragraph_format.space_after = Pt(0)
-        vrun = vp.add_run(value)
+        vrun = vp.add_run(_safe(value))
         _set_run(vrun, size=9.5, color=INK)
 
     return table
@@ -220,7 +222,7 @@ def add_data_table(document, headers, rows, col_widths_in=None):
         cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         p = cell.paragraphs[0]
         p.paragraph_format.space_after = Pt(0)
-        run = p.add_run(str(header))
+        run = p.add_run(_safe(str(header)))
         _set_run(run, bold=True, size=9, color=WHITE)
 
     for r_idx, row in enumerate(rows):
@@ -235,7 +237,7 @@ def add_data_table(document, headers, rows, col_widths_in=None):
             p = cell.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
             text = "—" if value in (None, "") else str(value)
-            run = p.add_run(text)
+            run = p.add_run(_safe(text))
             _set_run(run, size=8.5, color=INK)
 
     if col_widths_in:
@@ -247,7 +249,7 @@ def add_data_table(document, headers, rows, col_widths_in=None):
 
 def add_caption(document, text: str) -> None:
     p = document.add_paragraph()
-    run = p.add_run(text)
+    run = p.add_run(_safe(text))
     _set_run(run, size=9, color=MUTED)
     run.italic = True
     p.paragraph_format.space_after = Pt(4)
@@ -269,7 +271,7 @@ def add_footer(document: Document, left_text: str) -> None:
         usable_width, WD_TAB_ALIGNMENT.RIGHT
     )
 
-    left = paragraph.add_run(left_text + "\t")
+    left = paragraph.add_run(_safe(left_text) + "\t")
     _set_run(left, size=8, color=MUTED)
 
     tab = paragraph.add_run("Page ")

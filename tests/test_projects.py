@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from metascraper import cli, organizer, probe, service
 from metascraper.models import MediaInfo
 
-REC = datetime(2024, 5, 11, 18, 32, 7, tzinfo=timezone.utc)
+# Midday UTC, so the local calendar date is the 11th in any timezone.
+REC = datetime(2024, 5, 11, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _write(path, data=b"\x00" * 500):

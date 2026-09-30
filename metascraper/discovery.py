@@ -9,6 +9,13 @@ from .models import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 
 DEFAULT_MEDIA_EXTENSIONS: Set[str] = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
+# Windows keeps deleted files and restore points in these on every drive.
+SYSTEM_DIRS = {"$recycle.bin", "recycler", "system volume information"}
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
 
 def find_media_files(
     folders: Iterable[str],
@@ -28,7 +35,7 @@ def find_media_files(
                   for e in extra_extensions}
     extensions |= DEFAULT_MEDIA_EXTENSIONS
 
-    skip_abs = {os.path.abspath(d) for d in skip_dirs}
+    skip_abs = {_norm(d) for d in skip_dirs}
     seen: Set[str] = set()
     results: List[str] = []
 
@@ -42,8 +49,9 @@ def find_media_files(
             # Prune skipped and hidden directories in-place.
             dirs[:] = [
                 d for d in dirs
-                if os.path.abspath(os.path.join(root, d)) not in skip_abs
-                and not (skip_hidden and d.startswith("."))
+                if _norm(os.path.join(root, d)) not in skip_abs
+                and not (skip_hidden and (d.startswith(".")
+                                          or d.lower() in SYSTEM_DIRS))
             ]
             for name in files:
                 _consider(
@@ -63,8 +71,8 @@ def _consider(path, extensions, all_files, seen, results, skip_hidden) -> None:
     _, ext = os.path.splitext(name)
     if not all_files and ext.lower() not in extensions:
         return
-    abspath = os.path.abspath(path)
-    if abspath in seen:
+    key = _norm(path)
+    if key in seen:
         return
-    seen.add(abspath)
+    seen.add(key)
     results.append(path)

@@ -12,10 +12,13 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from . import utils
 from .models import MediaInfo, StreamSummary, classify_extension
+
+_WINDOWS = os.name == "nt"
 
 
 class ToolLocation:
@@ -47,6 +50,8 @@ class ToolLocation:
 
 
 def _resolve_binary(explicit: Optional[str], names: tuple) -> Optional[str]:
+    # Explorer's "Copy as path" wraps the path in quotes.
+    explicit = (explicit or "").strip().strip('"').strip("'").strip()
     if explicit:
         if os.path.isfile(explicit) and os.access(explicit, os.X_OK):
             return explicit
@@ -64,6 +69,29 @@ def _resolve_binary(explicit: Optional[str], names: tuple) -> Optional[str]:
 # Running the external tools
 # ---------------------------------------------------------------------------
 
+def _run_tool(cmd: List[str], timeout: int) -> subprocess.CompletedProcess:
+    """Run a metadata tool and capture its output.
+
+    Both tools print UTF-8; decoding explicitly avoids Windows' ANSI code page
+    garbling non-English names. CREATE_NO_WINDOW stops a console window from
+    flashing up for every file when the windowed app runs them.
+    """
+    kwargs: Dict[str, Any] = {}
+    if _WINDOWS:
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+        **kwargs,
+    )
+
+
 def run_ffprobe(path: str, ffprobe: str, timeout: int = 120) -> Dict[str, Any]:
     """Run ffprobe and return the parsed JSON payload (may raise)."""
     cmd = [
@@ -76,29 +104,40 @@ def run_ffprobe(path: str, ffprobe: str, timeout: int = 120) -> Dict[str, Any]:
         "-show_chapters",
         path,
     ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    result = _run_tool(cmd, timeout)
     if not result.stdout.strip():
         message = result.stderr.strip() or f"ffprobe exited with {result.returncode}"
         raise RuntimeError(message)
-    return json.loads(result.stdout)
+    data = json.loads(result.stdout)
+    # An unreadable file still prints "{}" — report why instead of silently
+    # cataloging it with no technical details.
+    if result.returncode != 0 and not (data.get("format") or data.get("streams")):
+        raise RuntimeError(result.stderr.strip()
+                           or f"ffprobe exited with {result.returncode}")
+    return data
 
 
 def run_exiftool(path: str, exiftool: str, timeout: int = 120) -> Dict[str, Any]:
     """Run exiftool and return the parsed JSON payload (may raise)."""
-    cmd = [exiftool, "-json", "-G", "-n", "-api", "largefilesupport=1", path]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    cmd = [exiftool, "-json", "-G", "-n", "-api", "largefilesupport=1"]
+    argfile = None
+    if _WINDOWS and not path.isascii():
+        # exiftool (Perl) reads its command line in the ANSI code page, which
+        # can't hold every name; pass the path in a UTF-8 argfile instead.
+        fd, argfile = tempfile.mkstemp(suffix=".args")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(path.encode("utf-8") + b"\n")
+        cmd += ["-charset", "filename=utf8", "-@", argfile]
+    else:
+        cmd.append(path)
+    try:
+        result = _run_tool(cmd, timeout)
+    finally:
+        if argfile:
+            try:
+                os.remove(argfile)
+            except OSError:
+                pass
     if not result.stdout.strip():
         message = result.stderr.strip() or f"exiftool exited with {result.returncode}"
         raise RuntimeError(message)
@@ -197,6 +236,10 @@ _DATE_KEYS = (
 )
 
 
+def _text(value: Any) -> Optional[str]:
+    return None if value in (None, "") else str(value)
+
+
 def _first_tag(tags: Dict[str, Any], keys) -> Optional[str]:
     lowered = {str(k).lower(): v for k, v in tags.items()}
     for key in keys:
@@ -285,6 +328,14 @@ def media_info_from_payloads(
         _stream_from_ffprobe(s) for s in ffprobe_data.get("streams", []) or []
     ]
 
+    # Trust the streams over the extension: an audio-only .mp4 (a voice memo)
+    # is audio. Only files with a known media extension are reclassified.
+    if info.streams and info.media_kind in ("Video", "Audio"):
+        if info.video_streams:
+            info.media_kind = "Video"
+        elif info.audio_streams:
+            info.media_kind = "Audio"
+
     # If ffprobe gave no duration, fall back to the longest stream duration.
     if info.duration_seconds is None and info.streams:
         durations = [s.duration_seconds for s in info.streams if s.duration_seconds]
@@ -301,24 +352,26 @@ def media_info_from_payloads(
     )
 
     # Device / provenance — prefer exiftool, fall back to container tags.
-    info.camera_make = (
+    # exiftool's JSON leaves number-like values unquoted (a model "6300"
+    # arrives as an int), so coerce these text fields back to strings.
+    info.camera_make = _text(
         exiftool_data.get("EXIF:Make")
         or exiftool_data.get("QuickTime:Make")
         or exiftool_data.get("Make")
         or _first_tag(format_tags, _MAKE_KEYS)
     )
-    info.camera_model = (
+    info.camera_model = _text(
         exiftool_data.get("EXIF:Model")
         or exiftool_data.get("QuickTime:Model")
         or exiftool_data.get("Model")
         or _first_tag(format_tags, _MODEL_KEYS)
     )
-    info.lens_model = (
+    info.lens_model = _text(
         exiftool_data.get("EXIF:LensModel")
         or exiftool_data.get("Composite:LensID")
         or exiftool_data.get("XMP:Lens")
     )
-    info.software = (
+    info.software = _text(
         exiftool_data.get("EXIF:Software")
         or exiftool_data.get("QuickTime:Software")
         or _first_tag(format_tags, _SOFTWARE_KEYS)

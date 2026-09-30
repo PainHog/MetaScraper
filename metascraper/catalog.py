@@ -61,13 +61,39 @@ class MasterCatalog:
                 records = data.get("records", {})
                 if records and not isinstance(records, dict):
                     raise ValueError("catalog 'records' is not a JSON object")
-                self.records = records or {}
+                self.records = self._rekey(records or {})
                 self.updated_at = data.get("updated_at")
             except (json.JSONDecodeError, OSError, ValueError):
                 # Corrupt or unreadable store: start fresh but keep a backup.
                 self._backup_corrupt_store()
                 self.records = {}
         return self
+
+    @staticmethod
+    def record_key(path: str) -> str:
+        """Records are keyed by path, case-insensitively where the OS is
+        (Windows), so re-scanning "d:\\footage" updates "D:\\Footage"."""
+        return os.path.normcase(os.path.abspath(path))
+
+    @classmethod
+    def _rekey(cls, records: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Normalize keys from older stores. Case-only duplicates (made by
+        earlier versions on Windows) merge into the most recently cataloged
+        record, keeping the earliest first-cataloged date."""
+        merged: Dict[str, Dict[str, Any]] = {}
+        for path, record in records.items():
+            key = cls.record_key(path)
+            current = merged.get(key)
+            if current is None:
+                merged[key] = record
+                continue
+            stamp = lambda r: str(r.get("cataloged_at") or "")  # noqa: E731
+            newer, older = (record, current) if stamp(record) >= stamp(current) \
+                else (current, record)
+            firsts = [str(r["first_cataloged_at"]) for r in (newer, older)
+                      if r.get("first_cataloged_at")]
+            merged[key] = dict(newer, first_cataloged_at=min(firsts)) if firsts else newer
+        return merged
 
     def _backup_corrupt_store(self) -> None:
         try:
@@ -87,7 +113,9 @@ class MasterCatalog:
         os.makedirs(os.path.dirname(os.path.abspath(self.store_path)), exist_ok=True)
         tmp = self.store_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            # ASCII escapes keep undecodable file names (lone surrogates)
+            # round-trippable instead of failing to encode.
+            json.dump(payload, handle, indent=2, ensure_ascii=True)
         os.replace(tmp, self.store_path)
 
     # -- mutation ---------------------------------------------------------
@@ -95,7 +123,7 @@ class MasterCatalog:
     def upsert(self, info: MediaInfo, generated_at: datetime) -> bool:
         """Insert or update a record. Returns True if it was newly added."""
         row = info.master_row()
-        key = info.path
+        key = self.record_key(info.path)
         existing = self.records.get(key)
         stamp = generated_at.isoformat()
         if existing:
@@ -159,7 +187,7 @@ class MasterCatalog:
         records = self.sorted_records()
         for r_idx, record in enumerate(records, start=2):
             for c_idx, key in enumerate(keys, start=1):
-                value = record.get(key)
+                value = utils.xml_safe(record.get(key))
                 cell = sheet.cell(row=r_idx, column=c_idx, value=value)
                 _neutralize_formula(cell, value)
                 cell.font = cell_font

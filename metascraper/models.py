@@ -66,6 +66,12 @@ class StreamSummary:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
+    def is_attached_picture(self) -> bool:
+        """True for cover art that ffprobe reports as a one-frame video stream."""
+        disposition = self.raw.get("disposition") or {}
+        return str(disposition.get("attached_pic", 0)) == "1"
+
+    @property
     def resolution(self) -> Optional[str]:
         if self.width and self.height:
             return f"{self.width} × {self.height}"
@@ -117,7 +123,9 @@ class MediaInfo:
 
     @property
     def video_streams(self) -> List[StreamSummary]:
-        return [s for s in self.streams if s.codec_type == "video"]
+        """Real video streams — embedded cover art is left out."""
+        return [s for s in self.streams
+                if s.codec_type == "video" and not s.is_attached_picture]
 
     @property
     def audio_streams(self) -> List[StreamSummary]:

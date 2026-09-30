@@ -72,8 +72,8 @@ def sanitize_component(name: str, fallback: str = "Untitled") -> str:
 
 def camera_label(info: MediaInfo) -> str:
     """Build a folder-friendly camera/device label from make + model."""
-    make = (info.camera_make or "").strip()
-    model = (info.camera_model or "").strip()
+    make = str(info.camera_make or "").strip()
+    model = str(info.camera_model or "").strip()
     if make and model:
         # Avoid "Sony Sony A7" when the make is already part of the model.
         label = model if make.lower() in model.lower() else f"{make} {model}"
@@ -86,6 +86,11 @@ def date_label(info: MediaInfo) -> str:
     """Return the YYYY-MM-DD folder name, preferring the recording date."""
     stamp = info.recorded_at or info.fs_modified or info.fs_created
     if isinstance(stamp, datetime):
+        # Match the catalog, which shows aware times in local time: a clip
+        # tagged 01:30 UTC on the 12th, shot at 20:30 on the 11th in Chicago,
+        # belongs in the 11th's folder.
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone()
         return stamp.strftime("%Y-%m-%d")
     return UNKNOWN_DATE
 
@@ -355,7 +360,7 @@ class OrganizeManifest:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            json.dump(payload, handle, indent=2, ensure_ascii=True)
         os.replace(tmp, self.path)
 
 

@@ -196,7 +196,7 @@ def _appendix_subheading(document, text: str) -> None:
     p = document.add_paragraph()
     p.paragraph_format.space_before = Pt(8)
     p.paragraph_format.space_after = Pt(3)
-    run = p.add_run(text)
+    run = p.add_run(utils.xml_safe(text))
     run.font.bold = True
     run.font.size = Pt(10)
     run.font.color.rgb = ds.BRAND
@@ -233,7 +233,7 @@ def build_report_document(info: MediaInfo, generated_at: datetime):
         ds.add_section_heading(document, "Notes")
         for note in info.notes:
             p = document.add_paragraph(style=None)
-            run = p.add_run(f"• {note}")
+            run = p.add_run(utils.xml_safe(f"• {note}"))
             run.font.size = Pt(9.5)
             run.font.color.rgb = ds.ACCENT
 

@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from fractions import Fraction
 from typing import Any, Optional
+
+# Characters a .docx/.xlsx (XML) can't hold: control characters, and unpaired
+# surrogates (undecodable bytes in a file name).
+_XML_ILLEGAL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def xml_safe(value: Any) -> Any:
+    """Replace characters Word and Excel files can't store with U+FFFD.
+
+    Camera tags sometimes carry control characters (e.g. a stray ``\\x1f``);
+    written as-is they make python-docx and openpyxl refuse the whole file.
+    Non-strings pass through unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    return _XML_ILLEGAL.sub("\ufffd", value)
 
 
 def human_file_size(num_bytes: Optional[int]) -> str:
